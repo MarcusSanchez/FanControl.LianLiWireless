@@ -78,11 +78,10 @@ fn discover(args: &[String]) -> Result<(), String> {
     }
     let mut dongle = Dongle::open().map_err(|e| e.to_string())?;
     println!(
-        "master {} channel {} firmware {}.{}",
+        "master {} channel {} firmware {}",
         mac(&dongle.master.master_mac),
         dongle.channel,
-        dongle.master.firmware >> 8,
-        dongle.master.firmware & 0xFF
+        dongle.master.firmware
     );
     for poll in 1..=options.polls {
         if poll > 1 {
