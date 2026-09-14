@@ -1,0 +1,23 @@
+[package]
+name = "lianli-wireless"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Drives Lian Li wireless fans through the RF dongle on Windows, with a FanControl plugin shell"
+license = "MIT"
+
+[lib]
+name = "lianli_wireless"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
