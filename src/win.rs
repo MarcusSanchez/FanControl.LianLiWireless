@@ -23,6 +23,7 @@ pub const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
 pub const ERROR_FILE_NOT_FOUND: DWORD = 2;
 pub const ERROR_ACCESS_DENIED: DWORD = 5;
 pub const ERROR_INVALID_HANDLE: DWORD = 6;
+pub const ERROR_NO_MORE_FILES: DWORD = 18;
 pub const ERROR_GEN_FAILURE: DWORD = 31;
 pub const ERROR_SHARING_VIOLATION: DWORD = 32;
 pub const ERROR_SEM_TIMEOUT: DWORD = 121;
@@ -163,6 +164,25 @@ extern "system" {
     pub fn CloseHandle(hObject: HANDLE) -> BOOL;
     pub fn LoadLibraryW(lpLibFileName: *const u16) -> HANDLE;
     pub fn GetProcAddress(hModule: HANDLE, lpProcName: *const u8) -> *const c_void;
+    pub fn CreateToolhelp32Snapshot(dwFlags: DWORD, th32ProcessID: DWORD) -> HANDLE;
+    pub fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+    pub fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+}
+
+pub const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;
+
+#[repr(C)]
+pub struct PROCESSENTRY32W {
+    pub dwSize: DWORD,
+    pub cntUsage: DWORD,
+    pub th32ProcessID: DWORD,
+    pub th32DefaultHeapID: usize,
+    pub th32ModuleID: DWORD,
+    pub cntThreads: DWORD,
+    pub th32ParentProcessID: DWORD,
+    pub pcPriClassBase: i32,
+    pub dwFlags: DWORD,
+    pub szExeFile: [u16; 260],
 }
 
 pub type WinUsb_Initialize =
@@ -313,6 +333,7 @@ mod tests {
         assert_eq!(size_of::<SP_DEVICE_INTERFACE_DATA>(), 32);
         assert_eq!(size_of::<USB_INTERFACE_DESCRIPTOR>(), 9);
         assert_eq!(size_of::<WINUSB_PIPE_INFORMATION>(), 12);
+        assert_eq!(size_of::<PROCESSENTRY32W>(), 568);
     }
 
     #[test]

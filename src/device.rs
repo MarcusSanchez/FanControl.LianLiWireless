@@ -20,9 +20,6 @@ pub const IN_PIPE: u8 = 0x81;
 /// Timeout for ordinary transfers.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long a flush waits for each stale frame.
-pub const FLUSH_WAIT: Duration = Duration::from_millis(5);
-
 /// What kind of transfer a pipe carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
@@ -268,29 +265,6 @@ impl Device {
         }
         Ok(read as usize)
     }
-
-    /// Discards whatever the device sent that nobody read.
-    pub fn flush(&mut self) {
-        let mut stale = [0u8; 512];
-        for _ in 0..64 {
-            match self.read(&mut stale, FLUSH_WAIT) {
-                Ok(n) if n > 0 => continue,
-                _ => break,
-            }
-        }
-    }
-
-    /// Reads a reply that arrives in pieces: waits `first` for the opening
-    /// piece, then keeps reading until `pause` passes with nothing more or
-    /// the buffer is full. Returns how much arrived.
-    pub fn read_until_silence(
-        &mut self,
-        buffer: &mut [u8],
-        first: Duration,
-        pause: Duration,
-    ) -> Result<usize, WinError> {
-        gather(buffer, first, pause, |chunk, timeout| self.read(chunk, timeout))
-    }
 }
 
 impl Drop for Device {
@@ -308,29 +282,6 @@ fn timeout_millis(timeout: Duration) -> u32 {
         .max(1)
 }
 
-fn gather(
-    buffer: &mut [u8],
-    first: Duration,
-    pause: Duration,
-    mut read: impl FnMut(&mut [u8], Duration) -> Result<usize, WinError>,
-) -> Result<usize, WinError> {
-    let mut total = 0;
-    let mut timeout = first;
-    let mut chunk = [0u8; 64];
-    while total < buffer.len() {
-        match read(&mut chunk, timeout)? {
-            0 => break,
-            n => {
-                let n = n.min(chunk.len()).min(buffer.len() - total);
-                buffer[total..total + n].copy_from_slice(&chunk[..n]);
-                total += n;
-                timeout = pause;
-            }
-        }
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,88 +293,6 @@ mod tests {
         assert_eq!(timeout_millis(Duration::ZERO), 1);
         assert_eq!(timeout_millis(Duration::from_secs(5)), 5000);
         assert_eq!(timeout_millis(Duration::from_secs(1 << 40)), u32::MAX);
-    }
-
-    #[test]
-    fn gather_returns_nothing_when_the_first_piece_never_comes() {
-        let n = gather(&mut [0; 512], TIMEOUT, TIMEOUT, |_, _| Ok(0)).unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn gather_keeps_what_arrived_before_the_pause() {
-        let first = Duration::from_millis(100);
-        let pause = Duration::from_millis(10);
-        let mut calls = 0;
-        let mut buffer = [0; 512];
-        let n = gather(&mut buffer, first, pause, |chunk, timeout| {
-            calls += 1;
-            if calls == 1 {
-                assert_eq!(timeout, first);
-                chunk[..3].copy_from_slice(&[0x10, 0, 0x80]);
-                Ok(3)
-            } else {
-                assert_eq!(timeout, pause);
-                Ok(0)
-            }
-        })
-        .unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(&buffer[..3], &[0x10, 0, 0x80]);
-        assert_eq!(calls, 2);
-    }
-
-    #[test]
-    fn gather_passes_on_a_failure_after_a_partial_reply() {
-        let mut calls = 0;
-        let result = gather(&mut [0; 512], TIMEOUT, TIMEOUT, |chunk, _| {
-            calls += 1;
-            if calls == 1 {
-                chunk.fill(0x10);
-                Ok(64)
-            } else {
-                Err(WinError {
-                    call: "WinUsb_ReadPipe",
-                    code: ERROR_DEVICE_NOT_CONNECTED,
-                })
-            }
-        });
-        assert_eq!(
-            result,
-            Err(WinError {
-                call: "WinUsb_ReadPipe",
-                code: ERROR_DEVICE_NOT_CONNECTED
-            })
-        );
-    }
-
-    #[test]
-    fn gather_stops_at_capacity_and_skips_an_empty_buffer() {
-        let mut calls = 0;
-        let mut buffer = [0; 64];
-        let n = gather(&mut buffer, TIMEOUT, TIMEOUT, |chunk, _| {
-            calls += 1;
-            chunk.fill(9);
-            Ok(64)
-        })
-        .unwrap();
-        assert_eq!(n, 64);
-        assert_eq!(calls, 1);
-        assert_eq!(buffer, [9; 64]);
-        let n = gather(&mut [], TIMEOUT, TIMEOUT, |_, _| panic!("empty buffer")).unwrap();
-        assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn gather_clips_an_overlong_piece_to_the_space_left() {
-        let mut buffer = [0; 100];
-        let n = gather(&mut buffer, TIMEOUT, TIMEOUT, |chunk, _| {
-            chunk.fill(7);
-            Ok(64)
-        })
-        .unwrap();
-        assert_eq!(n, 100);
-        assert_eq!(buffer, [7; 100]);
     }
 
     #[test]

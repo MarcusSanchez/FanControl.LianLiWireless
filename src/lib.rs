@@ -10,9 +10,11 @@
 
 pub mod device;
 pub mod discovery;
+pub mod dongle;
 pub mod enumerate;
 pub mod frame;
 pub mod groups;
 pub mod heartbeat;
+pub mod process;
 pub mod speed;
 pub mod win;
