@@ -167,6 +167,20 @@ extern "system" {
     pub fn CreateToolhelp32Snapshot(dwFlags: DWORD, th32ProcessID: DWORD) -> HANDLE;
     pub fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
     pub fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> BOOL;
+    pub fn GetLocalTime(lpSystemTime: *mut SYSTEMTIME);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SYSTEMTIME {
+    pub wYear: u16,
+    pub wMonth: u16,
+    pub wDayOfWeek: u16,
+    pub wDay: u16,
+    pub wHour: u16,
+    pub wMinute: u16,
+    pub wSecond: u16,
+    pub wMilliseconds: u16,
 }
 
 pub const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;

@@ -20,6 +20,16 @@ pub const EXACT_BELOW: u8 = 10;
 const SELECT: u8 = 0x12;
 const PWM: u8 = 0x10;
 
+/// The duty for a percentage, 0 to 100, rounded to the nearest step.
+pub fn duty_from_percent(percent: u8) -> u8 {
+    ((u32::from(percent.min(100)) * u32::from(MAX_DUTY) + 50) / 100) as u8
+}
+
+/// The percentage a duty stands for, rounded to the nearest whole number.
+pub fn percent_from_duty(duty: u8) -> u8 {
+    ((u32::from(duty) * 100 + u32::from(MAX_DUTY) / 2) / u32::from(MAX_DUTY)) as u8
+}
+
 /// The lowest non-zero duty this device's fans will run at.
 pub fn min_duty(device: &Device) -> u8 {
     (u16::from(min_percent(device)) * u16::from(MAX_DUTY) / 100) as u8
@@ -164,6 +174,24 @@ mod tests {
             sequence: 0,
             pwm_line: false,
             light_sync: false,
+        }
+    }
+
+    #[test]
+    fn percent_and_duty_convert_both_ways() {
+        assert_eq!(duty_from_percent(0), 0);
+        assert_eq!(duty_from_percent(10), 26);
+        assert_eq!(duty_from_percent(50), 128);
+        assert_eq!(duty_from_percent(81), 207);
+        assert_eq!(duty_from_percent(100), 255);
+        assert_eq!(duty_from_percent(150), 255);
+        assert_eq!(percent_from_duty(0), 0);
+        assert_eq!(percent_from_duty(25), 10);
+        assert_eq!(percent_from_duty(206), 81);
+        assert_eq!(percent_from_duty(214), 84);
+        assert_eq!(percent_from_duty(255), 100);
+        for percent in 0..=100u8 {
+            assert_eq!(percent_from_duty(duty_from_percent(percent)), percent);
         }
     }
 
