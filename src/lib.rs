@@ -9,6 +9,7 @@
 #![deny(missing_docs)]
 
 pub mod discovery;
+pub mod enumerate;
 pub mod frame;
 pub mod groups;
 pub mod heartbeat;
