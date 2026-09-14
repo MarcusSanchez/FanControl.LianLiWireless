@@ -25,19 +25,25 @@ pub fn min_duty(device: &Device) -> u8 {
     (u16::from(min_percent(device)) * u16::from(MAX_DUTY) / 100) as u8
 }
 
+/// The fan model byte, for devices whose kind is not fixed by their
+/// device type.
+fn model(device: &Device) -> Option<u8> {
+    match device.device_type {
+        1..=11 | 65 | 66 | 88 => None,
+        _ => device.fan_types.iter().copied().find(|b| *b != 0),
+    }
+}
+
 fn min_percent(device: &Device) -> u8 {
     match device.device_type {
         1..=9 | 65 | 88 => 0,
         10 | 11 | 66 => 10,
-        _ => {
-            let model = device.fan_types.iter().copied().find(|b| *b != 0);
-            match model {
-                Some(20..=26) | Some(59..=62) => 14,
-                Some(28..=31) | Some(36..=39) | Some(51..=58) => 11,
-                Some(63) => 8,
-                _ => 10,
-            }
-        }
+        _ => match model(device) {
+            Some(20..=26) | Some(59..=62) => 14,
+            Some(28..=31) | Some(36..=39) | Some(51..=58) => 11,
+            Some(63) => 8,
+            _ => 10,
+        },
     }
 }
 
@@ -46,11 +52,7 @@ fn is_cooler(device: &Device) -> bool {
 }
 
 fn filters_duty(device: &Device) -> bool {
-    device.device_type == 0
-        && matches!(
-            device.fan_types.iter().copied().find(|b| *b != 0),
-            Some(40..=42) | Some(126) | Some(127)
-        )
+    matches!(model(device), Some(40..=42) | Some(126) | Some(127))
 }
 
 /// Turns wanted duties into the ones sent to a device.
@@ -191,6 +193,10 @@ mod tests {
         assert_eq!(prepare(&d, [153, 154, 155, 255]), [152, 152, 156, 0]);
         let d = device(1, 0, 43, 3, false);
         assert_eq!(prepare(&d, [153, 154, 155, 0]), [153, 154, 155, 0]);
+        let d = device(1, 12, 126, 3, false);
+        assert_eq!(prepare(&d, [153, 154, 155, 0]), [152, 152, 156, 0]);
+        let d = device(1, 10, 40, 3, false);
+        assert_eq!(prepare(&d, [153, 154, 155, 255]), [153, 154, 155, 255]);
     }
 
     #[test]
