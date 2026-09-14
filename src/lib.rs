@@ -13,3 +13,4 @@ pub mod frame;
 pub mod groups;
 pub mod heartbeat;
 pub mod speed;
+pub mod win;
