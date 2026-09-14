@@ -435,7 +435,12 @@ impl Engine {
                     for (mac, percent) in std::mem::take(&mut *lock(&worker.wanted)) {
                         core.want(mac, percent);
                     }
-                    core.tick(&mut link, started, clock::local());
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        core.tick(&mut link, started, clock::local());
+                    }));
+                    if let Err(panic) = outcome {
+                        log(&format!("tick failed: {}", panic_text(&panic)));
+                    }
                     for event in core.take_events() {
                         log(&event);
                     }
@@ -500,19 +505,31 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The text a panic carried, if it was a string.
+pub fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = panic.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        String::from("unknown panic")
+    }
+}
+
+/// A scripted dongle for tests of anything built on the engine.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fake {
     use super::*;
     use crate::discovery::Device;
     use crate::enumerate::Role;
     use crate::win::{WinError, ERROR_DEVICE_NOT_CONNECTED};
     use std::collections::VecDeque;
 
-    const MASTER: [u8; 6] = [9; 6];
-    const A: [u8; 6] = [1; 6];
-    const B: [u8; 6] = [2; 6];
+    pub(crate) const MASTER: [u8; 6] = [9; 6];
+    pub(crate) const A: [u8; 6] = [1; 6];
+    pub(crate) const B: [u8; 6] = [2; 6];
 
-    fn device(mac: [u8; 6], receiver: u8, fans: u8, duty: u8) -> Device {
+    pub(crate) fn device(mac: [u8; 6], receiver: u8, fans: u8, duty: u8) -> Device {
         let mut duties = [0; 4];
         let mut rpm = [0; 4];
         for slot in 0..usize::from(fans) {
@@ -537,7 +554,7 @@ mod tests {
         }
     }
 
-    fn reply(devices: &[Device]) -> Reply {
+    pub(crate) fn reply(devices: &[Device]) -> Reply {
         Reply {
             reported: devices.len() as u8,
             masters: Vec::new(),
@@ -546,21 +563,21 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct Sent {
-        receiver: u8,
-        command: u8,
-        duty: [u8; 4],
+    pub(crate) struct Sent {
+        pub(crate) receiver: u8,
+        pub(crate) command: u8,
+        pub(crate) duty: [u8; 4],
     }
 
-    struct Fake {
+    pub(crate) struct Fake {
         replies: VecDeque<Result<Reply, dongle::Error>>,
         last: Reply,
-        sent: Vec<Sent>,
-        send_fails: bool,
+        pub(crate) sent: Vec<Sent>,
+        pub(crate) send_fails: bool,
     }
 
     impl Fake {
-        fn new(first: Reply) -> Self {
+        pub(crate) fn new(first: Reply) -> Self {
             Self {
                 replies: VecDeque::new(),
                 last: first,
@@ -569,20 +586,20 @@ mod tests {
             }
         }
 
-        fn then(&mut self, reply: Result<Reply, dongle::Error>) {
+        pub(crate) fn then(&mut self, reply: Result<Reply, dongle::Error>) {
             self.replies.push_back(reply);
         }
 
-        fn heartbeats(&self) -> usize {
+        pub(crate) fn heartbeats(&self) -> usize {
             self.sent.iter().filter(|s| s.command == 0x14).count()
         }
 
-        fn speeds(&self) -> Vec<&Sent> {
+        pub(crate) fn speeds(&self) -> Vec<&Sent> {
             self.sent.iter().filter(|s| s.command == 0x10).collect()
         }
     }
 
-    fn lost() -> dongle::Error {
+    pub(crate) fn lost() -> dongle::Error {
         dongle::Error::Transfer(
             Role::Receiver,
             WinError {
@@ -626,6 +643,12 @@ mod tests {
             Ok(())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::*;
+    use super::*;
 
     fn at(base: Instant, secs: u64) -> Instant {
         base + Duration::from_secs(secs)

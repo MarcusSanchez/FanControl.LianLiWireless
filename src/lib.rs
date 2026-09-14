@@ -14,6 +14,7 @@ pub mod discovery;
 pub mod dongle;
 pub mod engine;
 pub mod enumerate;
+pub mod ffi;
 pub mod frame;
 pub mod groups;
 pub mod heartbeat;
