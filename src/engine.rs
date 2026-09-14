@@ -430,6 +430,7 @@ impl Engine {
                     text(&link.master_mac()),
                     link.channel()
                 ));
+                let mut next = Instant::now();
                 loop {
                     let started = Instant::now();
                     for (mac, percent) in std::mem::take(&mut *lock(&worker.wanted)) {
@@ -448,11 +449,17 @@ impl Engine {
                     if worker.stop.load(Ordering::Acquire) {
                         break;
                     }
-                    while started.elapsed() < TICK {
-                        if worker.stop.load(Ordering::Acquire) {
+                    next += TICK;
+                    let now = Instant::now();
+                    if next < now {
+                        next = now;
+                    }
+                    loop {
+                        let remaining = next.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() || worker.stop.load(Ordering::Acquire) {
                             break;
                         }
-                        thread::sleep(Duration::from_millis(50));
+                        thread::sleep(remaining.min(Duration::from_millis(50)));
                     }
                     if worker.stop.load(Ordering::Acquire) {
                         break;
@@ -822,6 +829,16 @@ mod tests {
         assert_eq!(to_a.last().unwrap().duty, [255, 255, 255, 0]);
         assert_eq!(to_b.last().unwrap().duty, [255, 255, 0, 0]);
         assert!(core.take_events().iter().any(|e| e.starts_with("stopping")));
+    }
+
+    #[test]
+    fn engine_thread_ticks_once_a_second_on_a_fixed_schedule() {
+        let link = Fake::new(reply(&[device(A, 2, 3, 206)]));
+        let engine = Engine::start(link, |_| {});
+        thread::sleep(Duration::from_millis(3500));
+        let ticks = engine.snapshot().ticks;
+        assert!((4..=5).contains(&ticks), "{ticks} ticks in 3.5 s");
+        engine.stop();
     }
 
     #[test]
