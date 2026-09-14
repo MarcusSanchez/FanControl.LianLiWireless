@@ -115,7 +115,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
         }
     }
 
-    /// <summary>Stops the engine, which sends full speed to every reachable group.</summary>
+    /// <summary>Stops the engine. The groups keep their last duty.</summary>
     public void Close()
     {
         lock (_sync)
@@ -199,7 +199,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
             return;
         }
 
-        Log("closing; every reachable group goes to full speed");
+        Log("closing; the groups keep their last duty");
         try
         {
             foreach (string line in _engine.TakeLog())

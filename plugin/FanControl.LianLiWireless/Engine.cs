@@ -7,7 +7,7 @@ namespace FanControl.LianLiWireless;
 
 /// <summary>
 /// A running native engine. Opening finds the dongle and starts the loop;
-/// disposing stops it, which sends full speed to every reachable group.
+/// disposing stops it and leaves the groups at their last duty.
 /// </summary>
 internal sealed class Engine : IDisposable
 {
@@ -112,7 +112,7 @@ internal sealed class Engine : IDisposable
         return lines;
     }
 
-    /// <summary>Stops the engine after full speed to every reachable group. Safe to call twice.</summary>
+    /// <summary>Stops the engine. Safe to call twice.</summary>
     public void Dispose()
     {
         lock (_sync)

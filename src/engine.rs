@@ -3,9 +3,9 @@
 //!
 //! The engine owns the dongle for as long as it runs. Hosts hand it a
 //! percentage per group and read a snapshot of what the groups report.
-//! Safety lives here: no fan below the floor, every reachable fan at full
-//! speed when the dongle or a group is lost, and full speed before the
-//! engine stops.
+//! Safety lives here: no fan below the floor, and every reachable fan at
+//! full speed when the dongle or a group is lost. A stop leaves the groups
+//! at their last duty, which the firmware holds on its own.
 
 use crate::discovery::{Reply, FANS_PER_GROUP};
 use crate::dongle::{self, Dongle};
@@ -344,39 +344,29 @@ impl Core {
         self.snapshot.groups = groups;
     }
 
-    /// Sends full speed to every reachable group, for use before the
-    /// loop stops. Sends once, then once more after a short wait for any
-    /// group that has not confirmed.
+    /// Sends every group's current target one last time, so a target that
+    /// arrived just before the stop is not lost, and records the stop. The
+    /// groups keep whatever duty they have; the firmware holds it.
     pub fn shutdown<L: Link>(&mut self, link: &mut L, now: Instant) {
-        self.events.push(format!(
-            "stopping: every reachable group to {FAILSAFE_PERCENT}%"
-        ));
-        self.alarm = Some(String::from("stopping"));
-        self.drive(link, now);
-        thread::sleep(Duration::from_millis(300));
-        let later = now + Duration::from_millis(300);
-        if let Ok(reply) = link.poll() {
-            self.tracker.observe(&reply, later);
-        }
         let macs: Vec<[u8; 6]> = self.tracker.fans().map(|g| g.device.mac).collect();
         for mac in macs {
-            let confirmed = self
-                .tracker
-                .group(&mac)
-                .is_some_and(|g| g.acknowledged(later));
-            if !confirmed {
-                if let Some(group) = self.tracker.group(&mac) {
-                    if let Some(target) = group.target {
-                        let device = group.device;
-                        let slot = self.tracker.slot(&mac);
-                        let payload =
-                            speed::payload(&device, &link.master_mac(), self.channel, slot, target);
-                        let _ = link.send(device.receiver, &payload);
-                    }
-                }
+            let Some(group) = self.tracker.group(&mac) else {
+                continue;
+            };
+            if group.target.is_none() || group.acknowledged(now) {
+                continue;
+            }
+            let device = group.device;
+            let target = group.target.unwrap_or_default();
+            let slot = self.tracker.slot(&mac);
+            let payload = speed::payload(&device, &link.master_mac(), self.channel, slot, target);
+            if link.send(device.receiver, &payload).is_ok() {
+                self.tracker.sent(&mac, now);
             }
         }
-        self.publish(later);
+        self.events
+            .push(String::from("stopping; the groups keep their last duty"));
+        self.publish(now);
     }
 }
 
@@ -490,7 +480,7 @@ impl Engine {
         lock(&self.shared.snapshot).clone()
     }
 
-    /// Stops the loop, after sending full speed to every reachable group.
+    /// Stops the loop. The groups keep their last duty.
     pub fn stop(mut self) {
         self.shared.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
@@ -814,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_sends_full_speed_to_every_reachable_group() {
+    fn shutdown_resends_only_an_unconfirmed_target_and_leaves_the_rest() {
         let base = Instant::now();
         let a = device(A, 2, 3, 206);
         let b = device(B, 6, 2, 206);
@@ -822,13 +812,21 @@ mod tests {
         let mut core = Core::new(MASTER, 8);
         core.want(A, 50);
         core.tick(&mut link, base, clock());
+        assert_eq!(link.speeds().len(), 1);
         core.shutdown(&mut link, at(base, 1));
         let speeds = link.speeds();
-        let to_a: Vec<&&Sent> = speeds.iter().filter(|s| s.receiver == 2).collect();
-        let to_b: Vec<&&Sent> = speeds.iter().filter(|s| s.receiver == 6).collect();
-        assert_eq!(to_a.last().unwrap().duty, [255, 255, 255, 0]);
-        assert_eq!(to_b.last().unwrap().duty, [255, 255, 0, 0]);
+        assert_eq!(speeds.len(), 2);
+        assert!(speeds.iter().all(|s| s.receiver == 2 && s.duty == [128, 128, 128, 0]));
         assert!(core.take_events().iter().any(|e| e.starts_with("stopping")));
+
+        let mut applied = device(A, 2, 3, 128);
+        applied.duty = [128, 128, 128, 0];
+        let mut link = Fake::new(reply(&[applied, b]));
+        let mut core = Core::new(MASTER, 8);
+        core.want(A, 50);
+        core.tick(&mut link, base, clock());
+        core.shutdown(&mut link, at(base, 1));
+        assert_eq!(link.speeds().len(), 1);
     }
 
     #[test]
@@ -842,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_thread_runs_ticks_and_stops_with_full_speed() {
+    fn engine_thread_runs_ticks_and_stops() {
         let a = device(A, 2, 3, 206);
         let link = Fake::new(reply(&[a]));
         let logged = Arc::new(Mutex::new(Vec::new()));

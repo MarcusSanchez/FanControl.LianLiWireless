@@ -3,8 +3,8 @@
 //! Every function returns 0 on success or a negative code, never panics
 //! across the boundary, and leaves a description of the last failure for
 //! [`lianli_last_error`]. Handles come from [`lianli_open`] and go back
-//! through [`lianli_close`], which sends full speed to every reachable
-//! group before it returns. The layouts here are fixed; see
+//! through [`lianli_close`], which stops the engine and leaves the groups
+//! at their last duty. The layouts here are fixed; see
 //! `include/lianli_wireless.h`.
 
 use crate::engine::{self, Engine, Snapshot};
@@ -222,8 +222,8 @@ pub unsafe extern "C" fn lianli_open(out: *mut *mut Handle) -> i32 {
     })
 }
 
-/// Stops the engine, after full speed to every reachable group, and
-/// frees the handle.
+/// Stops the engine, leaving the groups at their last duty, and frees the
+/// handle.
 ///
 /// # Safety
 /// `handle` must be null or a pointer from [`lianli_open`] not yet closed.
