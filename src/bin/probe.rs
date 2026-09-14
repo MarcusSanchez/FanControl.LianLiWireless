@@ -2,10 +2,12 @@
 
 use lianli_wireless::discovery::{Device, Master, FANS_PER_GROUP};
 use lianli_wireless::dongle::Dongle;
+use lianli_wireless::engine::{Engine, Snapshot};
 use lianli_wireless::frame::BROADCAST;
 use lianli_wireless::groups::Tracker;
 use lianli_wireless::{clock, heartbeat, process, speed};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,10 +26,19 @@ commands:
       the start of the group's address, enough to be unique. The
       heartbeat runs throughout. Refuses to run while the L-Connect
       service is running.
+
+  run [minutes] [--every S] [--set <group>=<percent>]...
+      run the engine for <minutes> (default 60), printing its log as it
+      happens and a status line every S seconds (default 10). Type
+      '<group> <percent>' during the run to change a group, or 'q' to
+      stop early. Afterwards the engine stops (full speed to every
+      group) and the groups are put back to the duties they started at.
 ";
 
 const DEFAULT_POLLS: u32 = 5;
 const DEFAULT_HOLD: u64 = 10;
+const DEFAULT_RUN_MINUTES: u64 = 60;
+const DEFAULT_STATUS_EVERY: u64 = 10;
 const POLL_GAP: Duration = Duration::from_secs(1);
 const ACK_POLL_GAP: Duration = Duration::from_millis(250);
 const ACK_LIMIT: Duration = Duration::from_secs(5);
@@ -41,6 +52,7 @@ fn main() -> ExitCode {
         }
         Some("discover") => discover(&args[1..]),
         Some("set") => set(&args[1..]),
+        Some("run") => run(&args[1..]),
         Some(command) => {
             eprint!("probe: unknown command '{command}'\n{USAGE}");
             return ExitCode::from(2);
@@ -342,6 +354,232 @@ fn set(args: &[String]) -> Result<(), String> {
     let restored = session.apply(&target, before, "restore");
     held?;
     restored
+}
+
+struct RunOptions {
+    length: Duration,
+    every: Duration,
+    initial: Vec<(String, u8)>,
+}
+
+fn parse_run(args: &[String]) -> Result<RunOptions, String> {
+    let mut options = RunOptions {
+        length: Duration::from_secs(DEFAULT_RUN_MINUTES * 60),
+        every: Duration::from_secs(DEFAULT_STATUS_EVERY),
+        initial: Vec::new(),
+    };
+    let mut args = args.iter();
+    let mut minutes_given = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--every" => {
+                let value = args.next().ok_or("--every needs a number of seconds")?;
+                let seconds: u64 = value
+                    .parse()
+                    .ok()
+                    .filter(|s| *s > 0)
+                    .ok_or_else(|| format!("--every: '{value}' is not a positive number"))?;
+                options.every = Duration::from_secs(seconds);
+            }
+            "--set" => {
+                let value = args.next().ok_or("--set needs <group>=<percent>")?;
+                options.initial.push(parse_assignment(value)?);
+            }
+            other if !minutes_given && !other.starts_with("--") => {
+                let minutes: u64 = other
+                    .parse()
+                    .ok()
+                    .filter(|m| *m > 0)
+                    .ok_or_else(|| format!("'{other}' is not a positive number of minutes"))?;
+                options.length = Duration::from_secs(minutes * 60);
+                minutes_given = true;
+            }
+            other => return Err(format!("unexpected argument '{other}'")),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_assignment(text: &str) -> Result<(String, u8), String> {
+    let (group, percent) = text
+        .split_once('=')
+        .ok_or_else(|| format!("'{text}' is not <group>=<percent>"))?;
+    let percent: u8 = percent
+        .parse()
+        .ok()
+        .filter(|p| *p <= 100)
+        .ok_or_else(|| format!("'{percent}' is not a percent from 0 to 100"))?;
+    Ok((group.to_ascii_lowercase(), percent))
+}
+
+fn stamp() -> String {
+    let now = clock::local();
+    format!("{:02}:{:02}:{:02}", now.hour, now.minute, now.second)
+}
+
+fn run(args: &[String]) -> Result<(), String> {
+    let options = parse_run(args)?;
+    refuse_if_lconnect_runs()?;
+    let engine = Engine::open(|line| println!("{} | {line}", stamp())).map_err(|e| e.to_string())?;
+
+    let started = Instant::now();
+    let mut first: Option<Snapshot> = None;
+    while first.is_none() {
+        thread::sleep(Duration::from_millis(200));
+        let snapshot = engine.snapshot();
+        if snapshot.ticks > 0 {
+            first = Some(snapshot);
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            return Err(String::from("the engine did not tick within 10 s"));
+        }
+    }
+    let first = first.unwrap_or_default();
+    let starting: Vec<([u8; 6], [u8; FANS_PER_GROUP], u8)> = first
+        .groups
+        .iter()
+        .map(|g| (g.mac, g.duty, g.fan_count))
+        .collect();
+    println!(
+        "{} | {} groups; starting duties {}",
+        stamp(),
+        starting.len(),
+        starting
+            .iter()
+            .map(|(m, d, n)| format!("{} {:?}", mac(m), fans(d, *n)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for (prefix, percent) in &options.initial {
+        match resolve(&first, prefix) {
+            Ok(target) => engine.set_percent(target, *percent),
+            Err(message) => println!("{} | {message}", stamp()),
+        }
+    }
+
+    let (lines, _reader) = stdin_lines();
+    let mut last_status = Instant::now() - options.every;
+    let mut quit = false;
+    while started.elapsed() < options.length && !quit {
+        thread::sleep(Duration::from_millis(250));
+        while let Ok(line) = lines.try_recv() {
+            let line = line.trim().to_ascii_lowercase();
+            if line == "q" || line == "quit" {
+                quit = true;
+                break;
+            }
+            let snapshot = engine.snapshot();
+            match line.split_once(' ') {
+                Some((prefix, percent)) => match (resolve(&snapshot, prefix), percent.trim().parse::<u8>()) {
+                    (Ok(target), Ok(percent)) if percent <= 100 => {
+                        engine.set_percent(target, percent);
+                        println!("{} | you asked for {}% on {}", stamp(), percent, mac(&target));
+                    }
+                    (Err(message), _) => println!("{} | {message}", stamp()),
+                    _ => println!("{} | '{percent}' is not a percent from 0 to 100", stamp()),
+                },
+                None if line.is_empty() => {}
+                None => println!("{} | type '<group> <percent>' or 'q'", stamp()),
+            }
+        }
+        if last_status.elapsed() >= options.every {
+            last_status = Instant::now();
+            print_status(&engine.snapshot(), started.elapsed());
+        }
+    }
+
+    println!("{} | stopping the engine", stamp());
+    engine.stop();
+    println!("{} | putting the groups back", stamp());
+    let mut session = Session::open()?;
+    session.heartbeat()?;
+    session.poll()?;
+    let mut failures = Vec::new();
+    for (target, duty, _) in &starting {
+        if let Err(message) = session.apply(target, *duty, &format!("restore {}", mac(target))) {
+            failures.push(message);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn resolve(snapshot: &Snapshot, prefix: &str) -> Result<[u8; 6], String> {
+    let matching: Vec<[u8; 6]> = snapshot
+        .groups
+        .iter()
+        .map(|g| g.mac)
+        .filter(|m| mac(m).starts_with(prefix))
+        .collect();
+    match matching.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!(
+            "no group starts with '{prefix}'; groups: {}",
+            snapshot.groups.iter().map(|g| mac(&g.mac)).collect::<Vec<_>>().join(", ")
+        )),
+        several => Err(format!(
+            "'{prefix}' matches {}",
+            several.iter().map(mac).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+fn print_status(snapshot: &Snapshot, elapsed: Duration) {
+    let minutes = elapsed.as_secs() / 60;
+    let seconds = elapsed.as_secs() % 60;
+    println!(
+        "{} | {minutes:>3}:{seconds:02} ticks {} polls {} failed {}{}",
+        stamp(),
+        snapshot.ticks,
+        snapshot.polls,
+        snapshot.poll_failures,
+        match &snapshot.alarm {
+            Some(why) => format!(" FAILSAFE ({why})"),
+            None => String::new(),
+        }
+    );
+    for g in &snapshot.groups {
+        println!(
+            "{} |   {} {} duty {:?} target {} rpm {:?}{}",
+            stamp(),
+            mac(&g.mac),
+            if g.online { "online " } else { "OFFLINE" },
+            fans(&g.duty, g.fan_count),
+            match g.target {
+                Some(t) => format!("{:?}{}", fans(&t, g.fan_count), if g.acknowledged { "" } else { " (unacknowledged)" }),
+                None => String::from("none"),
+            },
+            fans(&g.rpm, g.fan_count),
+            if g.unacknowledged > 1 {
+                format!(" sent {} times without confirmation", g.unacknowledged)
+            } else {
+                String::new()
+            }
+        );
+    }
+}
+
+fn stdin_lines() -> (Receiver<String>, thread::JoinHandle<()>) {
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match stdin.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if sender.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (receiver, reader)
 }
 
 fn fans<T: Copy>(values: &[T; FANS_PER_GROUP], count: u8) -> Vec<T> {
