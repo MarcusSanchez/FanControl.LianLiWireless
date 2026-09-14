@@ -8,6 +8,7 @@
 
 #![deny(missing_docs)]
 
+pub mod device;
 pub mod discovery;
 pub mod enumerate;
 pub mod frame;
