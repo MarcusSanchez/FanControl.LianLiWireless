@@ -129,7 +129,7 @@ pub fn parse_reply(reply: &[u8], pages: u8) -> Result<Reply, Error> {
     }
     let mut masters = Vec::new();
     let mut devices = Vec::new();
-    for record in reply[HEADER_LEN..expected].chunks_exact(RECORD_LEN) {
+    for record in reply[HEADER_LEN..expected].as_chunks::<RECORD_LEN>().0 {
         if let Some(master) = parse_master(record) {
             masters.push(master);
         } else if let Some(device) = parse_device(record) {

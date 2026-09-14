@@ -10,5 +10,6 @@
 
 pub mod discovery;
 pub mod frame;
+pub mod groups;
 pub mod heartbeat;
 pub mod speed;
