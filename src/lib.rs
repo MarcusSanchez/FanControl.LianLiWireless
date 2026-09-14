@@ -7,3 +7,5 @@
 //! C interface so that a fan control host can drive it.
 
 #![deny(missing_docs)]
+
+pub mod frame;
