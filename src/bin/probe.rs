@@ -27,12 +27,12 @@ commands:
       heartbeat runs throughout. Refuses to run while the L-Connect
       service is running.
 
-  run [minutes] [--every S] [--set <group>=<percent>]...
+  run [minutes] [--every S] [--set <group>=<percent>]... [--leave]
       run the engine for <minutes> (default 60), printing its log as it
       happens and a status line every S seconds (default 10). Type
       '<group> <percent>' during the run to change a group, or 'q' to
-      stop early. Afterwards the engine stops (full speed to every
-      group) and the groups are put back to the duties they started at.
+      stop early. Afterwards the groups are put back to the duties they
+      started at, or left at their last targets with --leave.
 ";
 
 const DEFAULT_POLLS: u32 = 5;
@@ -360,6 +360,7 @@ struct RunOptions {
     length: Duration,
     every: Duration,
     initial: Vec<(String, u8)>,
+    leave: bool,
 }
 
 fn parse_run(args: &[String]) -> Result<RunOptions, String> {
@@ -367,11 +368,13 @@ fn parse_run(args: &[String]) -> Result<RunOptions, String> {
         length: Duration::from_secs(DEFAULT_RUN_MINUTES * 60),
         every: Duration::from_secs(DEFAULT_STATUS_EVERY),
         initial: Vec::new(),
+        leave: false,
     };
     let mut args = args.iter();
     let mut minutes_given = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--leave" => options.leave = true,
             "--every" => {
                 let value = args.next().ok_or("--every needs a number of seconds")?;
                 let seconds: u64 = value
@@ -489,14 +492,24 @@ fn run(args: &[String]) -> Result<(), String> {
     }
 
     println!("{} | stopping the engine", stamp());
+    let last = engine.snapshot();
     engine.stop();
-    println!("{} | putting the groups back", stamp());
+    let wanted: Vec<([u8; 6], [u8; FANS_PER_GROUP])> = if options.leave {
+        println!("{} | confirming the last targets", stamp());
+        last.groups
+            .iter()
+            .filter_map(|g| g.target.map(|t| (g.mac, t)))
+            .collect()
+    } else {
+        println!("{} | putting the groups back", stamp());
+        starting.iter().map(|(m, d, _)| (*m, *d)).collect()
+    };
     let mut session = Session::open()?;
     session.heartbeat()?;
     session.poll()?;
     let mut failures = Vec::new();
-    for (target, duty, _) in &starting {
-        if let Err(message) = session.apply(target, *duty, &format!("restore {}", mac(target))) {
+    for (target, duty) in &wanted {
+        if let Err(message) = session.apply(target, *duty, &format!("confirm {}", mac(target))) {
             failures.push(message);
         }
     }
