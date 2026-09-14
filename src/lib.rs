@@ -8,4 +8,5 @@
 
 #![deny(missing_docs)]
 
+pub mod discovery;
 pub mod frame;
