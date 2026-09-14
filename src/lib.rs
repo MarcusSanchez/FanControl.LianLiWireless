@@ -12,6 +12,7 @@ pub mod clock;
 pub mod device;
 pub mod discovery;
 pub mod dongle;
+pub mod engine;
 pub mod enumerate;
 pub mod frame;
 pub mod groups;
