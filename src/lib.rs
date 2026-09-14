@@ -10,3 +10,4 @@
 
 pub mod discovery;
 pub mod frame;
+pub mod speed;
