@@ -8,7 +8,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <AssemblyName>FanControl.LianLiWireless</AssemblyName>
     <RootNamespace>FanControl.LianLiWireless</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
   </PropertyGroup>
 
