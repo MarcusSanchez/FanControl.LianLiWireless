@@ -203,6 +203,14 @@ impl Dongle {
         })
     }
 
+    /// Finds, opens and connects the dongle pair again, replacing the old
+    /// handles. On failure the old handles stay in place.
+    pub fn reopen(&mut self) -> Result<(), Error> {
+        let fresh = Self::open()?;
+        *self = fresh;
+        Ok(())
+    }
+
     /// One discovery poll. The page count follows what the receiver last
     /// reported.
     pub fn poll(&mut self) -> Result<Reply, Error> {

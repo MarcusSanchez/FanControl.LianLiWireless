@@ -103,6 +103,8 @@ pub struct Reply {
     pub masters: Vec<Master>,
     /// Devices seen, in reply order, malformed records left out.
     pub devices: Vec<Device>,
+    /// Records left out for a bad marker or a zero address.
+    pub skipped: u8,
 }
 
 /// Reads a reply to a discovery request that asked for `pages` pages.
@@ -129,17 +131,21 @@ pub fn parse_reply(reply: &[u8], pages: u8) -> Result<Reply, Error> {
     }
     let mut masters = Vec::new();
     let mut devices = Vec::new();
+    let mut skipped = 0;
     for record in reply[HEADER_LEN..expected].as_chunks::<RECORD_LEN>().0 {
         if let Some(master) = parse_master(record) {
             masters.push(master);
         } else if let Some(device) = parse_device(record) {
             devices.push(device);
+        } else {
+            skipped += 1;
         }
     }
     Ok(Reply {
         reported,
         masters,
         devices,
+        skipped,
     })
 }
 
@@ -351,6 +357,8 @@ mod tests {
         assert!(parsed.masters.is_empty());
         assert_eq!(parsed.devices.len(), 1);
         assert_eq!(parsed.devices[0].mac, GROUP_B);
+        assert_eq!(parsed.skipped, 3);
+        assert_eq!(parse_reply(&reply(&[group_a()]), 1).unwrap().skipped, 0);
     }
 
     #[test]

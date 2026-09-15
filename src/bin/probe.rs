@@ -563,11 +563,13 @@ fn print_status(snapshot: &Snapshot, elapsed: Duration) {
     let minutes = elapsed.as_secs() / 60;
     let seconds = elapsed.as_secs() % 60;
     println!(
-        "{} | {minutes:>3}:{seconds:02} ticks {} polls {} failed {}{}",
+        "{} | {minutes:>3}:{seconds:02} ticks {} polls {} failed {} reconnects {} unreadable records {}{}",
         stamp(),
         snapshot.ticks,
         snapshot.polls,
         snapshot.poll_failures,
+        snapshot.reconnects,
+        snapshot.skipped_records,
         match &snapshot.alarm {
             Some(why) => format!(" FAILSAFE ({why})"),
             None => String::new(),

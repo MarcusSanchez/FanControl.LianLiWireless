@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 /// How long a device can go unheard before it counts as offline.
 pub const OFFLINE_AFTER: Duration = Duration::from_secs(15);
 
+/// How long a bound device can stay offline before it is forgotten.
+pub const FORGET_AFTER: Duration = Duration::from_secs(10 * 60);
+
 /// How recent a sighting must be for its reported duties to acknowledge a
 /// command.
 pub const ACK_WINDOW: Duration = Duration::from_secs(3);
@@ -30,7 +33,7 @@ const AGREE: u32 = 3;
 /// One device and what has been asked of it.
 #[derive(Debug, Clone)]
 pub struct Group {
-    /// The device as last reported, with its identity confirmed.
+    /// The device as last reported, with its identity and shape confirmed.
     pub device: Device,
     /// When the device was last heard.
     pub last_seen: Instant,
@@ -41,12 +44,28 @@ pub struct Group {
     /// Sends of the target since it was last seen applied.
     pub unacknowledged: u32,
     identity: Option<(Identity, u32)>,
+    shape: Option<(Shape, u32)>,
 }
 
+/// Who a device belongs to and how it is addressed.
 type Identity = ([u8; 6], u8, u8);
+
+/// What a device is: kind, fan count, attachment side, fan models. A
+/// single garbled record must not change these, since they decide which
+/// slots are driven and what the duty floor is.
+type Shape = (u8, u8, bool, [u8; 4]);
 
 fn identity(device: &Device) -> Identity {
     (device.master_mac, device.channel, device.receiver)
+}
+
+fn shape(device: &Device) -> Shape {
+    (
+        device.device_type,
+        device.fan_count,
+        device.right_attach,
+        device.fan_types,
+    )
 }
 
 impl Group {
@@ -58,6 +77,7 @@ impl Group {
             last_sent: None,
             unacknowledged: 0,
             identity: None,
+            shape: None,
         }
     }
 
@@ -103,21 +123,34 @@ impl Group {
         if !self.online(now) {
             self.device = *seen;
             self.identity = None;
+            self.shape = None;
         } else {
-            let was = identity(&self.device);
             let kept = self.device;
             self.device = *seen;
             self.device.master_mac = kept.master_mac;
             self.device.channel = kept.channel;
             self.device.receiver = kept.receiver;
-            let now_seen = identity(seen);
-            if now_seen == was {
+            self.device.device_type = kept.device_type;
+            self.device.fan_count = kept.fan_count;
+            self.device.right_attach = kept.right_attach;
+            self.device.fan_types = kept.fan_types;
+            if identity(seen) == identity(&kept) {
                 self.identity = None;
-            } else if let Some(agreed) = agree(&mut self.identity, now_seen) {
+            } else if let Some(agreed) = agree(&mut self.identity, identity(seen)) {
                 (
                     self.device.master_mac,
                     self.device.channel,
                     self.device.receiver,
+                ) = agreed;
+            }
+            if shape(seen) == shape(&kept) {
+                self.shape = None;
+            } else if let Some(agreed) = agree(&mut self.shape, shape(seen)) {
+                (
+                    self.device.device_type,
+                    self.device.fan_count,
+                    self.device.right_attach,
+                    self.device.fan_types,
                 ) = agreed;
             }
         }
@@ -184,12 +217,23 @@ impl Tracker {
         self.rebuild(now);
     }
 
-    /// Drops offline devices from the order, and forgets offline devices
-    /// that were never bound to the dongle.
-    pub fn sweep(&mut self, now: Instant) {
+    /// Drops offline devices from the order. Forgets offline devices that
+    /// were never bound to the dongle at once, and bound ones after
+    /// [`FORGET_AFTER`]; returns the addresses forgotten.
+    pub fn sweep(&mut self, now: Instant) -> Vec<[u8; 6]> {
         let master = self.master_mac;
-        self.groups.retain(|g| g.online(now) || g.bound_to(&master));
+        let mut forgotten = Vec::new();
+        self.groups.retain(|g| {
+            let keep = g.online(now)
+                || (g.bound_to(&master)
+                    && now.saturating_duration_since(g.last_seen) < FORGET_AFTER);
+            if !keep {
+                forgotten.push(g.device.mac);
+            }
+            keep
+        });
         self.rebuild(now);
+        forgotten
     }
 
     fn rebuild(&mut self, now: Instant) {
@@ -294,6 +338,7 @@ mod tests {
             reported: devices.len() as u8,
             masters: Vec::new(),
             devices: devices.to_vec(),
+            skipped: 0,
         }
     }
 
@@ -415,10 +460,46 @@ mod tests {
             base,
         );
         assert_eq!(t.groups().len(), 2);
-        t.sweep(at(base, 16));
+        assert_eq!(t.sweep(at(base, 16)), vec![[2; 6]]);
         assert_eq!(t.online().count(), 0);
         assert_eq!(t.groups().len(), 1);
         assert_eq!(t.groups()[0].device.mac, [1; 6]);
+    }
+
+    #[test]
+    fn a_bound_group_is_forgotten_after_a_long_silence() {
+        let base = Instant::now();
+        let mut t = Tracker::new(MASTER);
+        t.observe(&reply(&[device([1; 6], MASTER, 0, 3)]), base);
+        assert!(t
+            .sweep(base + FORGET_AFTER - Duration::from_secs(1))
+            .is_empty());
+        assert_eq!(t.groups().len(), 1);
+        assert_eq!(t.sweep(base + FORGET_AFTER), vec![[1; 6]]);
+        assert!(t.groups().is_empty());
+    }
+
+    #[test]
+    fn a_single_odd_record_does_not_change_a_groups_shape() {
+        let base = Instant::now();
+        let mut t = Tracker::new(MASTER);
+        t.observe(&reply(&[device([1; 6], MASTER, 0, 3)]), base);
+        let mut odd = device([1; 6], MASTER, 0, 3);
+        odd.fan_count = 0;
+        odd.fan_types = [20, 20, 20, 0];
+        odd.rpm = [900; 4];
+        t.observe(&reply(&[odd]), at(base, 1));
+        let g = t.group(&[1; 6]).unwrap();
+        assert_eq!(g.device.fan_count, 3);
+        assert_eq!(g.device.fan_types, [43, 43, 43, 0]);
+        assert_eq!(g.device.rpm, [900; 4]);
+        assert!(g.has_fans());
+        t.observe(&reply(&[odd]), at(base, 2));
+        assert_eq!(t.group(&[1; 6]).unwrap().device.fan_count, 3);
+        t.observe(&reply(&[odd]), at(base, 3));
+        let g = t.group(&[1; 6]).unwrap();
+        assert_eq!(g.device.fan_count, 0);
+        assert_eq!(g.device.fan_types, [20, 20, 20, 0]);
     }
 
     #[test]
