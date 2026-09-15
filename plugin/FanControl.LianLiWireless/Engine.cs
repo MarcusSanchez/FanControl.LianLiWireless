@@ -87,6 +87,29 @@ internal sealed class Engine : IDisposable
         }
     }
 
+    /// <summary>Stops driving a group on the engine's next tick. Its fans keep their duty.</summary>
+    public void Clear(byte[] mac)
+    {
+        if (mac is null || mac.Length != 6)
+        {
+            throw new ArgumentException("a group address is six bytes", nameof(mac));
+        }
+
+        lock (_sync)
+        {
+            if (_handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            int code = Native.lianli_clear(_handle, mac);
+            if (code != Native.Ok)
+            {
+                throw new EngineException("clear", code, Native.LastError());
+            }
+        }
+    }
+
     /// <summary>What the engine knew at its last tick.</summary>
     public EngineState ReadState()
     {

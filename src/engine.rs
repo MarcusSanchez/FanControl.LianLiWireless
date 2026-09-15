@@ -34,6 +34,10 @@ pub const FAILSAFE_PERCENT: u8 = 100;
 /// Polls that must fail in a row before the dongle counts as lost.
 pub const POLL_FAILURES: u32 = 3;
 
+/// Least time between two logged target changes on one group. Changes in
+/// between are counted and mentioned on the next line.
+pub const CHANGE_LOG_EVERY: Duration = Duration::from_secs(10);
+
 /// Wait before the second reconnect attempt; each later one waits twice
 /// as long, up to [`RECONNECT_MAX_WAIT`]. The first attempt is immediate.
 pub const RECONNECT_FIRST_WAIT: Duration = Duration::from_secs(2);
@@ -165,9 +169,18 @@ pub struct Core {
     reconnect_wait: Duration,
     last_skip_log: Option<Instant>,
     last_online: Vec<[u8; 6]>,
+    change_log: HashMap<[u8; 6], ChangeLog>,
     alarm: Option<Alarm>,
     snapshot: Snapshot,
     events: Vec<String>,
+}
+
+/// What the log has said about one group's target, and what it has not
+/// said yet.
+struct ChangeLog {
+    logged_at: Instant,
+    held: u32,
+    pending: Option<String>,
 }
 
 impl Core {
@@ -184,6 +197,7 @@ impl Core {
             reconnect_wait: RECONNECT_FIRST_WAIT,
             last_skip_log: None,
             last_online: Vec::new(),
+            change_log: HashMap::new(),
             alarm: None,
             snapshot: Snapshot {
                 master_mac,
@@ -196,10 +210,19 @@ impl Core {
 
     /// Asks for a percentage on a group. Takes effect on the next tick.
     pub fn want(&mut self, mac: [u8; 6], percent: u8) {
-        let percent = percent.clamp(FLOOR_PERCENT, 100);
-        if self.wanted.insert(mac, percent) != Some(percent) {
-            self.events
-                .push(format!("{} wanted at {percent}%", text(&mac)));
+        self.wanted.insert(mac, percent.clamp(FLOOR_PERCENT, 100));
+    }
+
+    /// Stops driving a group. Nothing more is sent to it and its fans keep
+    /// the duty they have.
+    pub fn release(&mut self, mac: [u8; 6]) {
+        let asked = self.wanted.remove(&mac).is_some();
+        let driven = self.tracker.clear_target(&mac);
+        if asked || driven {
+            self.events.push(format!(
+                "{} released; its fans keep their last duty",
+                text(&mac)
+            ));
         }
     }
 
@@ -222,6 +245,7 @@ impl Core {
         self.sweep(now);
         self.judge();
         self.drive(link, now);
+        self.flush_change_log(now);
         self.publish(now);
     }
 
@@ -401,13 +425,61 @@ impl Core {
                 continue;
             };
             if previous != Some(target) {
-                self.events.push(format!(
-                    "{} target {:?}",
-                    text(&mac),
-                    &target[..fan_count.clamp(1, FANS_PER_GROUP)]
-                ));
+                self.log_change(
+                    &mac,
+                    percent,
+                    &target[..fan_count.clamp(1, FANS_PER_GROUP)],
+                    now,
+                );
             }
             self.send_if_due(link, &mac, now);
+        }
+    }
+
+    /// Logs a target change, at most one line per group per
+    /// [`CHANGE_LOG_EVERY`]. A change inside that time is held; the next
+    /// line says how many were held, and [`Self::flush_change_log`] writes
+    /// the last held change once the time is up.
+    fn log_change(&mut self, mac: &[u8; 6], percent: u8, target: &[u8], now: Instant) {
+        let line = format!("{} target {percent}% {target:?}", text(mac));
+        let held = match self.change_log.get_mut(mac) {
+            Some(entry) => {
+                if now.duration_since(entry.logged_at) < CHANGE_LOG_EVERY {
+                    entry.held += 1;
+                    entry.pending = Some(line);
+                    return;
+                }
+                entry.logged_at = now;
+                entry.pending = None;
+                std::mem::take(&mut entry.held)
+            }
+            None => {
+                self.change_log.insert(
+                    *mac,
+                    ChangeLog {
+                        logged_at: now,
+                        held: 0,
+                        pending: None,
+                    },
+                );
+                0
+            }
+        };
+        self.events.push(line + &held_suffix(held));
+    }
+
+    fn flush_change_log(&mut self, now: Instant) {
+        for entry in self.change_log.values_mut() {
+            if entry.pending.is_none() || now.duration_since(entry.logged_at) < CHANGE_LOG_EVERY {
+                continue;
+            }
+            let Some(line) = entry.pending.take() else {
+                continue;
+            };
+            let held = std::mem::take(&mut entry.held);
+            entry.logged_at = now;
+            self.events
+                .push(line + &held_suffix(held.saturating_sub(1)));
         }
     }
 
@@ -498,6 +570,14 @@ impl Core {
     }
 }
 
+fn held_suffix(held: u32) -> String {
+    match held {
+        0 => String::new(),
+        1 => String::from(" (1 earlier change not logged)"),
+        n => format!(" ({n} earlier changes not logged)"),
+    }
+}
+
 fn text(mac: &[u8; 6]) -> String {
     mac.iter()
         .map(|b| format!("{b:02x}"))
@@ -505,9 +585,15 @@ fn text(mac: &[u8; 6]) -> String {
         .join(":")
 }
 
+/// What a host asks of the loop between ticks.
+enum Request {
+    Want([u8; 6], u8),
+    Release([u8; 6]),
+}
+
 struct Shared {
     snapshot: Mutex<Snapshot>,
-    wanted: Mutex<Vec<([u8; 6], u8)>>,
+    requests: Mutex<Vec<Request>>,
     stop: AtomicBool,
 }
 
@@ -535,7 +621,7 @@ impl Engine {
                 channel: link.channel(),
                 ..Snapshot::default()
             }),
-            wanted: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
         });
         let worker = Arc::clone(&shared);
@@ -551,8 +637,11 @@ impl Engine {
                 let mut next = Instant::now();
                 loop {
                     let started = Instant::now();
-                    for (mac, percent) in std::mem::take(&mut *lock(&worker.wanted)) {
-                        core.want(mac, percent);
+                    for request in std::mem::take(&mut *lock(&worker.requests)) {
+                        match request {
+                            Request::Want(mac, percent) => core.want(mac, percent),
+                            Request::Release(mac) => core.release(mac),
+                        }
                     }
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         core.tick(&mut link, started, clock::local());
@@ -600,7 +689,13 @@ impl Engine {
     /// Asks for a percentage on a group. Applied on the next tick, never
     /// below [`FLOOR_PERCENT`].
     pub fn set_percent(&self, mac: [u8; 6], percent: u8) {
-        lock(&self.shared.wanted).push((mac, percent));
+        lock(&self.shared.requests).push(Request::Want(mac, percent));
+    }
+
+    /// Stops driving a group on the next tick. Its fans keep the duty
+    /// they have.
+    pub fn clear(&self, mac: [u8; 6]) {
+        lock(&self.shared.requests).push(Request::Release(mac));
     }
 
     /// What the engine knew at its last tick.
@@ -1093,15 +1188,110 @@ mod tests {
     }
 
     #[test]
-    fn wanting_the_same_percent_again_is_quiet() {
+    fn target_changes_are_logged_at_most_once_in_ten_seconds_per_group() {
+        let base = Instant::now();
+        let mut link = Fake::new(reply(&[device(A, 2, 3, 206), device(B, 6, 2, 206)]));
         let mut core = Core::new(MASTER, 8);
         core.want(A, 50);
-        core.want(A, 50);
-        core.want(A, 60);
+        core.want(B, 50);
+        core.tick(&mut link, base, clock());
         let events = core.take_events();
-        assert_eq!(events.len(), 2);
-        assert!(events[0].ends_with("wanted at 50%"));
-        assert!(events[1].ends_with("wanted at 60%"));
+        let targets: Vec<&String> = events.iter().filter(|e| e.contains(" target ")).collect();
+        assert_eq!(targets.len(), 2);
+        assert!(
+            targets[0].ends_with("target 50% [128, 128, 128]"),
+            "{}",
+            targets[0]
+        );
+        assert!(
+            targets[1].ends_with("target 50% [128, 128]"),
+            "{}",
+            targets[1]
+        );
+
+        for (i, percent) in [51u8, 52, 53].iter().enumerate() {
+            core.want(A, *percent);
+            core.tick(&mut link, at(base, 1 + i as u64), clock());
+        }
+        for second in 4..10 {
+            core.tick(&mut link, at(base, second), clock());
+        }
+        assert!(core.take_events().iter().all(|e| !e.contains(" target ")));
+
+        core.tick(&mut link, at(base, 10), clock());
+        let events = core.take_events();
+        let targets: Vec<&String> = events.iter().filter(|e| e.contains(" target ")).collect();
+        assert_eq!(targets.len(), 1);
+        assert!(
+            targets[0].ends_with("target 53% [135, 135, 135] (2 earlier changes not logged)"),
+            "{}",
+            targets[0]
+        );
+
+        core.want(A, 55);
+        core.tick(&mut link, at(base, 11), clock());
+        core.want(A, 60);
+        core.tick(&mut link, at(base, 20), clock());
+        let events = core.take_events();
+        let targets: Vec<&String> = events.iter().filter(|e| e.contains(" target ")).collect();
+        assert_eq!(targets.len(), 1);
+        assert!(
+            targets[0].ends_with("target 60% [153, 153, 153] (1 earlier change not logged)"),
+            "{}",
+            targets[0]
+        );
+        assert_eq!(
+            core.snapshot()
+                .groups
+                .iter()
+                .find(|g| g.mac == A)
+                .unwrap()
+                .target,
+            Some([153, 153, 153, 0])
+        );
+    }
+
+    #[test]
+    fn a_released_group_is_left_alone_and_the_others_are_still_driven() {
+        let base = Instant::now();
+        let mut link = Fake::new(reply(&[device(A, 2, 3, 206), device(B, 6, 2, 206)]));
+        let mut core = Core::new(MASTER, 8);
+        core.want(A, 50);
+        core.want(B, 50);
+        core.tick(&mut link, base, clock());
+        assert_eq!(link.speeds().len(), 2);
+
+        core.release(A);
+        let events = core.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.ends_with("released; its fans keep their last duty")),
+            "{events:?}"
+        );
+        core.tick(&mut link, at(base, 1), clock());
+        let sent = link.speeds();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2].receiver, 6);
+        let a = core.snapshot().groups.iter().find(|g| g.mac == A).unwrap();
+        assert_eq!(a.target, None);
+        assert!(!a.acknowledged);
+
+        core.release(A);
+        assert!(core.take_events().is_empty());
+
+        core.want(A, 40);
+        core.tick(&mut link, at(base, 2), clock());
+        assert_eq!(link.speeds().len(), 5);
+        assert_eq!(
+            core.snapshot()
+                .groups
+                .iter()
+                .find(|g| g.mac == A)
+                .unwrap()
+                .target,
+            Some([102, 102, 102, 0])
+        );
     }
 
     #[test]

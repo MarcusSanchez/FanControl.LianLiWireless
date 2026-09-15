@@ -10,7 +10,7 @@ public class EngineStateTests
     {
         var buffer = new byte[EngineState.Size];
         BitConverter.GetBytes((uint)EngineState.Size).CopyTo(buffer, 0);
-        BitConverter.GetBytes(1u).CopyTo(buffer, 4);
+        BitConverter.GetBytes(EngineState.Version).CopyTo(buffer, 4);
         buffer[14] = 8;
         buffer[15] = 0;
         BitConverter.GetBytes(3449UL).CopyTo(buffer, 16);
@@ -62,8 +62,25 @@ public class EngineStateTests
         Assert.True(state.Groups[0].Acknowledged);
         Assert.Equal(new[] { 1765, 1767, 1771, 0 }, state.Groups[0].Rpm);
         Assert.Equal(new[] { 206, 206, 206, 0 }, state.Groups[0].Duty);
+        Assert.Equal(81, state.Groups[0].ReportedPercent);
         Assert.Equal("99:db:c8:e5:66:e1", state.Groups[1].Address);
         Assert.False(state.Groups[1].Online);
+        Assert.Null(state.Groups[1].ReportedPercent);
+    }
+
+    [Fact]
+    public void ReportedPercentRoundsTheDutyByte()
+    {
+        var group = new GroupState { Online = true, FanCount = 1 };
+        Assert.Equal(0, group.ReportedPercent);
+        group.Duty[0] = 25;
+        Assert.Equal(10, group.ReportedPercent);
+        group.Duty[0] = 128;
+        Assert.Equal(50, group.ReportedPercent);
+        group.Duty[0] = 255;
+        Assert.Equal(100, group.ReportedPercent);
+        group.FanCount = 0;
+        Assert.Null(group.ReportedPercent);
     }
 
     [Fact]
@@ -87,9 +104,9 @@ public class EngineStateTests
     public void RefusesAnotherInterfaceVersion()
     {
         byte[] buffer = Buffer(0);
-        BitConverter.GetBytes(2u).CopyTo(buffer, 4);
+        BitConverter.GetBytes(EngineState.Version + 1).CopyTo(buffer, 4);
         var error = Assert.Throws<ArgumentException>(() => EngineState.Parse(buffer));
-        Assert.Contains("version 2", error.Message, StringComparison.Ordinal);
+        Assert.Contains("version 3", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

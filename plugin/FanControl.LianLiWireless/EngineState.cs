@@ -27,6 +27,14 @@ internal sealed class GroupState
 
     /// <summary>The address as colon-separated hex.</summary>
     public string Address => EngineState.FormatMac(Mac);
+
+    /// <summary>
+    /// The duty the receiver reports for the first fan, as a percentage of
+    /// the 0 to 255 range the engine reports in; null while the group is
+    /// offline or has no fans.
+    /// </summary>
+    public int? ReportedPercent =>
+        Online && FanCount > 0 && Duty.Length > 0 ? (Duty[0] * 100 + 127) / 255 : (int?)null;
 }
 
 /// <summary>What the engine knew at its last tick, read from the native state layout.</summary>
@@ -36,7 +44,7 @@ internal sealed class EngineState
     public const int Size = 560;
 
     /// <summary>The interface version this layout belongs to.</summary>
-    public const uint Version = 1;
+    public const uint Version = 2;
 
     private const int GroupSize = 32;
     private const int MaxGroups = 16;

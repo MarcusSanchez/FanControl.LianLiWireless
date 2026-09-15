@@ -38,8 +38,10 @@ internal static class SensorNames
 
 /// <summary>
 /// The control for one group. Setting hands the percentage to the engine;
-/// the value shown is what was last asked for. Resetting leaves the fans at
-/// their last duty, since nothing else is there to take them.
+/// the value shown is the duty the receiver reports, so the failsafe and a
+/// slow acknowledgement show as they are, with the last request as a
+/// fallback while the group is offline. Resetting stops driving the group;
+/// its fans keep their last duty, since nothing else is there to take them.
 /// </summary>
 internal sealed class GroupControl : IPluginControlSensor
 {
@@ -70,7 +72,7 @@ internal sealed class GroupControl : IPluginControlSensor
 
     public float? Value { get; private set; }
 
-    public void Update() => Value = _asked;
+    public void Update() => Value = _plugin.Reported(Address) ?? _asked;
 
     public void Set(float val)
     {
@@ -81,6 +83,7 @@ internal sealed class GroupControl : IPluginControlSensor
     public void Reset()
     {
         _asked = null;
+        _plugin.Release(_mac);
     }
 }
 

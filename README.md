@@ -44,12 +44,20 @@ Behaviour worth knowing:
 - A control value below 30 % is raised to 30 % by the plugin's engine, so
   fans never stop under FanControl. The library itself sends whatever it
   is given; `probe set` will send 0.
-- If the dongle stops answering, or a group goes unheard for 15 seconds,
-  every group still reachable is set to 100 % until things recover.
-- When FanControl closes or refreshes the plugin, the groups keep whatever
-  duty they had; the firmware holds it.
+- If the dongle stops answering, every group still reachable is set to
+  100 % while the engine reopens it, trying again with a wait that doubles
+  from 2 seconds up to a minute. A group that goes unheard for 15 seconds
+  keeps its last duty, which the firmware holds; its speed sensors go
+  blank until it is heard again, and after ten minutes it is forgotten.
+- When FanControl closes or refreshes the plugin, or a control is reset,
+  the groups keep whatever duty they had; the firmware holds it.
+- A control shows the duty its receiver reports, so the failsafe and a
+  slow acknowledgement are visible as they are.
 - The plugin writes a log to `%ProgramData%\FanControl\lianli-wireless.log`:
-  groups coming and going, targets, failsafe changes, errors.
+  groups coming and going, targets, failsafe changes, errors. Target
+  changes are logged at most once every ten seconds per group, with a
+  count of the changes in between. At 1 MB the file is moved to
+  `lianli-wireless.log.1`, replacing the previous one.
 
 ## The probe
 
@@ -72,9 +80,10 @@ end or leaving the last targets in place with `--leave`.
 
 ## The C interface
 
-`include/lianli_wireless.h` declares the seven functions the library
-exports: open, close, set a percentage, read a fixed-layout state, take a
-log line, read the last error, and the interface version. Every function
+`include/lianli_wireless.h` declares the eight functions the library
+exports: open, close, set a percentage, clear a group, read a fixed-layout
+state, take a log line, read the last error, and the interface version.
+Every function
 returns 0 or a negative code and never lets a panic cross into the caller.
 
 ## Build

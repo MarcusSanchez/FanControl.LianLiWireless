@@ -15,8 +15,8 @@ use std::ffi::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
-/// Version of this interface's layouts and codes.
-pub const ABI_VERSION: u32 = 1;
+/// Version of this interface's functions, layouts and codes.
+pub const ABI_VERSION: u32 = 2;
 
 /// Most groups a state can carry.
 pub const MAX_GROUPS: usize = 16;
@@ -281,6 +281,35 @@ pub unsafe extern "C" fn lianli_set_percent(
     })
 }
 
+/// Stops driving the group with this address. Nothing more is sent to it
+/// and its fans keep the duty they have, until the next
+/// [`lianli_set_percent`]. Applied on the engine's next tick.
+///
+/// # Safety
+/// `handle` must be from [`lianli_open`]; `mac` must point to six bytes.
+#[no_mangle]
+pub unsafe extern "C" fn lianli_clear(handle: *const Handle, mac: *const u8) -> i32 {
+    guarded("clear", || {
+        if handle.is_null() || mac.is_null() {
+            set_error("clear: handle or mac is null");
+            return ERR_ARGUMENT;
+        }
+        let handle = unsafe { &*handle };
+        let mut address = [0u8; 6];
+        address.copy_from_slice(unsafe { std::slice::from_raw_parts(mac, 6) });
+        match &handle.engine {
+            Some(engine) => {
+                engine.clear(address);
+                OK
+            }
+            None => {
+                set_error("clear: engine stopped");
+                ERR_ARGUMENT
+            }
+        }
+    })
+}
+
 /// Fills `state` with what the engine knew at its last tick. The caller
 /// sets `state.size` first; a structure from an older layout is refused.
 ///
@@ -424,7 +453,7 @@ mod tests {
         assert_eq!(offset_of!(State, poll_failures), 32);
         assert_eq!(offset_of!(State, group_count), 40);
         assert_eq!(offset_of!(State, groups), 44);
-        assert_eq!(lianli_version(), 1);
+        assert_eq!(lianli_version(), 2);
     }
 
     #[test]
@@ -452,6 +481,10 @@ mod tests {
         assert_eq!(unsafe { lianli_close(ptr::null_mut()) }, ERR_ARGUMENT);
         assert_eq!(
             unsafe { lianli_set_percent(ptr::null(), ptr::null(), 50) },
+            ERR_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lianli_clear(ptr::null(), ptr::null()) },
             ERR_ARGUMENT
         );
         assert_eq!(
@@ -493,7 +526,7 @@ mod tests {
             groups: [Group::default(); MAX_GROUPS],
         };
         assert_eq!(unsafe { lianli_read_state(handle, &mut state) }, OK);
-        assert_eq!(state.version, 1);
+        assert_eq!(state.version, 2);
         assert_eq!(state.master_mac, [9; 6]);
         assert_eq!(state.channel, 8);
         assert!(state.ticks >= 2);
@@ -520,7 +553,20 @@ mod tests {
         while unsafe { lianli_take_log(handle, buffer.as_mut_ptr(), buffer.len()) } > 0 {
             lines += 1;
         }
-        assert!(lines >= 3, "{lines}");
+        assert!(lines >= 2, "{lines}");
+
+        assert_eq!(unsafe { lianli_clear(handle, mac.as_ptr()) }, OK);
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(unsafe { lianli_read_state(handle, &mut state) }, OK);
+        assert_eq!(state.groups[0].has_target, 0);
+        assert_eq!(state.groups[0].target, [0, 0, 0, 0]);
+        let n = unsafe { lianli_take_log(handle, buffer.as_mut_ptr(), buffer.len()) };
+        assert!(n > 0);
+        let released = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap();
+        assert!(
+            released.ends_with("released; its fans keep their last duty"),
+            "{released}"
+        );
 
         assert_eq!(unsafe { lianli_close(handle) }, OK);
     }

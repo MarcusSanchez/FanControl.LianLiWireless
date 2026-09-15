@@ -61,6 +61,8 @@ pub enum Error {
     ShortWrite(Role, usize),
     /// The receiver's reply could not be read.
     Reply(discovery::Error),
+    /// The handles were given up for a reopen that then failed.
+    Closed,
 }
 
 impl fmt::Display for Error {
@@ -72,6 +74,7 @@ impl fmt::Display for Error {
             Self::NoMaster => f.write_str("the transmitter answered on no channel"),
             Self::ShortWrite(role, n) => write!(f, "{role} took {n} of {FRAME_LEN} bytes"),
             Self::Reply(error) => error.fmt(f),
+            Self::Closed => f.write_str("the dongle is closed until it is reopened"),
         }
     }
 }
@@ -177,13 +180,17 @@ pub fn send<P: Port>(
 
 /// Both dongles, open and connected.
 pub struct Dongle {
-    tx: Device,
-    rx: Device,
+    handles: Option<Handles>,
     /// What the transmitter said about itself.
     pub master: ConnectReply,
     /// The channel it answered on.
     pub channel: u8,
     pages: u8,
+}
+
+struct Handles {
+    tx: Device,
+    rx: Device,
 }
 
 impl Dongle {
@@ -195,17 +202,19 @@ impl Dongle {
         let rx = Device::open(&paths.receiver).map_err(|e| Error::Open(Role::Receiver, e))?;
         let (master, channel) = connect(&mut tx)?;
         Ok(Self {
-            tx,
-            rx,
+            handles: Some(Handles { tx, rx }),
             master,
             channel,
             pages: 1,
         })
     }
 
-    /// Finds, opens and connects the dongle pair again, replacing the old
-    /// handles. On failure the old handles stay in place.
+    /// Closes the dongle pair, then finds, opens and connects it again.
+    /// WinUSB gives an interface to one handle at a time, so the old
+    /// handles go first; if the reopen fails, every transfer reports
+    /// [`Error::Closed`] until a later reopen succeeds.
     pub fn reopen(&mut self) -> Result<(), Error> {
+        self.handles = None;
         let fresh = Self::open()?;
         *self = fresh;
         Ok(())
@@ -214,20 +223,22 @@ impl Dongle {
     /// One discovery poll. The page count follows what the receiver last
     /// reported.
     pub fn poll(&mut self) -> Result<Reply, Error> {
-        let reply = poll(&mut self.rx, self.pages)?;
+        let handles = self.handles.as_mut().ok_or(Error::Closed)?;
+        let reply = poll(&mut handles.rx, self.pages)?;
         self.pages = frame::pages_for(reply.reported);
         Ok(reply)
     }
 
     /// Sends one radio payload to a receiver type on the dongle's channel.
     pub fn send(&mut self, receiver: u8, payload: &RfPayload) -> Result<(), Error> {
-        send(&mut self.tx, self.channel, receiver, payload)
+        self.send_on(self.channel, receiver, payload)
     }
 
     /// Sends one radio payload to a receiver type on a given channel, the
     /// one the device itself reported.
     pub fn send_on(&mut self, channel: u8, receiver: u8, payload: &RfPayload) -> Result<(), Error> {
-        send(&mut self.tx, channel, receiver, payload)
+        let handles = self.handles.as_mut().ok_or(Error::Closed)?;
+        send(&mut handles.tx, channel, receiver, payload)
     }
 }
 

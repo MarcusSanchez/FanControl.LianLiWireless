@@ -298,6 +298,18 @@ impl Tracker {
         Some(prepared)
     }
 
+    /// Drops the device's target so nothing more is sent to it. Returns
+    /// whether it had one.
+    pub fn clear_target(&mut self, mac: &[u8; 6]) -> bool {
+        let Some(group) = self.groups.iter_mut().find(|g| g.device.mac == *mac) else {
+            return false;
+        };
+        let had = group.target.take().is_some();
+        group.last_sent = None;
+        group.unacknowledged = 0;
+        had
+    }
+
     /// Records that the device's target went out.
     pub fn sent(&mut self, mac: &[u8; 6], now: Instant) {
         if let Some(group) = self.groups.iter_mut().find(|g| g.device.mac == *mac) {

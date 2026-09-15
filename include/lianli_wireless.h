@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define LIANLI_ABI_VERSION 1u
+#define LIANLI_ABI_VERSION 2u
 #define LIANLI_MAX_GROUPS 16
 
 #define LIANLI_OK 0
@@ -60,6 +60,9 @@ int32_t lianli_open(lianli_handle **out);
  * about a second at most. The groups keep their last duty. */
 int32_t lianli_close(lianli_handle *handle);
 int32_t lianli_set_percent(const lianli_handle *handle, const uint8_t mac[6], uint8_t percent);
+/* Stops driving a group until the next lianli_set_percent. Its fans keep
+ * the duty they have. */
+int32_t lianli_clear(const lianli_handle *handle, const uint8_t mac[6]);
 int32_t lianli_read_state(const lianli_handle *handle, lianli_state *state);
 int32_t lianli_take_log(const lianli_handle *handle, char *buffer, size_t length);
 int32_t lianli_last_error(char *buffer, size_t length);

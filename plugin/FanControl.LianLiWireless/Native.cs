@@ -80,6 +80,9 @@ internal static class Native
     internal static extern int lianli_set_percent(IntPtr handle, byte[] mac, byte percent);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int lianli_clear(IntPtr handle, byte[] mac);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int lianli_read_state(IntPtr handle, byte[] state);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

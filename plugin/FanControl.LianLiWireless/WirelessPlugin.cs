@@ -14,7 +14,8 @@ namespace FanControl.LianLiWireless;
 /// </summary>
 public sealed class WirelessPlugin : IPlugin2, IDisposable
 {
-    private static readonly TimeSpan FirstStateWait = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FirstStateWait = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan StallAfter = TimeSpan.FromSeconds(10);
 
     private readonly object _sync = new object();
     private readonly IPluginLogger? _host;
@@ -23,6 +24,8 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
     private Engine? _engine;
     private EngineState _state = new EngineState();
     private bool _alarmShown;
+    private DateTime _lastTickSeen;
+    private bool _stallShown;
 
     /// <summary>Host-injected constructor. FanControl supplies the logger.</summary>
     public WirelessPlugin(IPluginLogger logger)
@@ -103,15 +106,28 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
         }
     }
 
+    /// <summary>
+    /// Waits until the engine has reported the same non-empty set of groups
+    /// on two ticks in a row, so a group the first poll missed still gets
+    /// its sensors, or until the wait runs out.
+    /// </summary>
     private void WaitForFirstState()
     {
         DateTime deadline = DateTime.UtcNow + FirstStateWait;
+        ulong lastTicks = 0;
+        int lastCount = -1;
         while (DateTime.UtcNow < deadline)
         {
             Refresh();
-            if (_state.Ticks > 0 && _state.Groups.Count > 0)
+            if (_state.Ticks > lastTicks)
             {
-                break;
+                if (_state.Groups.Count > 0 && _state.Groups.Count == lastCount)
+                {
+                    break;
+                }
+
+                lastTicks = _state.Ticks;
+                lastCount = _state.Groups.Count;
             }
 
             Thread.Sleep(200);
@@ -187,6 +203,40 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
         }
     }
 
+    internal void Release(byte[] mac)
+    {
+        lock (_sync)
+        {
+            _asked.Remove(EngineState.FormatMac(mac));
+            try
+            {
+                _engine?.Clear(mac);
+            }
+#pragma warning disable CA1031 // host seam: a refused request is logged, the control stays
+            catch (Exception ex)
+            {
+                Log("clear failed: " + ex.Message);
+            }
+#pragma warning restore CA1031
+        }
+    }
+
+    internal float? Reported(string address)
+    {
+        lock (_sync)
+        {
+            foreach (GroupState group in _state.Groups)
+            {
+                if (group.Address == address)
+                {
+                    return group.ReportedPercent;
+                }
+            }
+
+            return null;
+        }
+    }
+
     internal float? Rpm(string address, int slot)
     {
         lock (_sync)
@@ -217,12 +267,15 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
                 _file.Write(line);
             }
 
+            ulong before = _state.Ticks;
             _state = _engine.ReadState();
             if (_state.Alarm != _alarmShown)
             {
                 _alarmShown = _state.Alarm;
                 Log(_state.Alarm ? "failsafe in force: every reachable group at full speed" : "failsafe cleared");
             }
+
+            WatchTicks(before);
         }
 #pragma warning disable CA1031 // host seam: a failed read keeps the last state, never crashes FanControl
         catch (Exception ex)
@@ -230,6 +283,37 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
             Log("read failed: " + ex.Message);
         }
 #pragma warning restore CA1031
+    }
+
+    /// <summary>
+    /// Notices an engine whose tick count has stopped moving. The loop is
+    /// guarded against panics, so this should never fire; if it does, the
+    /// log says so once, and again when the ticks resume.
+    /// </summary>
+    private void WatchTicks(ulong before)
+    {
+        DateTime now = DateTime.UtcNow;
+        if (_state.Ticks != before || _lastTickSeen == default)
+        {
+            _lastTickSeen = now;
+            if (_stallShown)
+            {
+                _stallShown = false;
+                Log("engine ticking again");
+            }
+
+            return;
+        }
+
+        TimeSpan quiet = now - _lastTickSeen;
+        if (!_stallShown && quiet >= StallAfter)
+        {
+            _stallShown = true;
+            Log(string.Format(
+                CultureInfo.InvariantCulture,
+                "engine stalled: no tick for {0} s; the fans keep their last duty",
+                (int)quiet.TotalSeconds));
+        }
     }
 
     private void TearDown()
@@ -257,6 +341,8 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
         _engine = null;
         _state = new EngineState();
         _alarmShown = false;
+        _lastTickSeen = default;
+        _stallShown = false;
     }
 
     private void Log(string line)
