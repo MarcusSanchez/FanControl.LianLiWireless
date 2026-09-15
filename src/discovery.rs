@@ -345,7 +345,8 @@ mod tests {
         assert!(parse_device(&bad_marker).is_none());
         assert!(parse_device(&zero_mac).is_none());
         assert!(parse_master(&zero_master).is_none());
-        let parsed = parse_reply(&reply(&[bad_marker, zero_master, group_b(), zero_mac]), 1).unwrap();
+        let parsed =
+            parse_reply(&reply(&[bad_marker, zero_master, group_b(), zero_mac]), 1).unwrap();
         assert_eq!(parsed.reported, 4);
         assert!(parsed.masters.is_empty());
         assert_eq!(parsed.devices.len(), 1);

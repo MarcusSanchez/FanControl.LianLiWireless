@@ -27,7 +27,7 @@ internal sealed class FileLog
             "lianli-wireless.log");
 
     /// <summary>Where this log writes.</summary>
-    public string Path_ => _path;
+    public string Location => _path;
 
     /// <summary>Appends one line with a local timestamp.</summary>
     public void Write(string line)

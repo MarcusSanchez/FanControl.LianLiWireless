@@ -131,10 +131,7 @@ pub fn connect<P: Port>(tx: &mut P) -> Result<(ConnectReply, u8), Error> {
     for channel in frame::channel_scan() {
         for _ in 0..frame::connect_attempts(channel) {
             drain(tx, FRAME_LEN, 16).map_err(|e| Error::Transfer(Role::Transmitter, e))?;
-            if tx
-                .write(&frame::connect_request(channel), TIMEOUT)
-                .is_err()
-            {
+            if tx.write(&frame::connect_request(channel), TIMEOUT).is_err() {
                 continue;
             }
             let mut reply = [0u8; FRAME_LEN];
@@ -155,8 +152,8 @@ pub fn poll<P: Port>(rx: &mut P, pages: u8) -> Result<Reply, Error> {
     drain(rx, 512, 64).map_err(|e| Error::Transfer(role, e))?;
     write_frame(rx, role, &frame::discovery_request(pages))?;
     let mut buffer = vec![0u8; frame::discovery_reply_len(pages)];
-    let n = gather(rx, &mut buffer, REPLY_WAIT, REPLY_PAUSE)
-        .map_err(|e| Error::Transfer(role, e))?;
+    let n =
+        gather(rx, &mut buffer, REPLY_WAIT, REPLY_PAUSE).map_err(|e| Error::Transfer(role, e))?;
     discovery::parse_reply(&buffer[..n], pages).map_err(Error::Reply)
 }
 
@@ -190,7 +187,8 @@ impl Dongle {
     /// Finds, opens and connects to the dongle pair.
     pub fn open() -> Result<Self, Error> {
         let paths = enumerate::find().map_err(Error::Find)?;
-        let mut tx = Device::open(&paths.transmitter).map_err(|e| Error::Open(Role::Transmitter, e))?;
+        let mut tx =
+            Device::open(&paths.transmitter).map_err(|e| Error::Open(Role::Transmitter, e))?;
         let rx = Device::open(&paths.receiver).map_err(|e| Error::Open(Role::Receiver, e))?;
         let (master, channel) = connect(&mut tx)?;
         Ok(Self {
@@ -213,6 +211,12 @@ impl Dongle {
     /// Sends one radio payload to a receiver type on the dongle's channel.
     pub fn send(&mut self, receiver: u8, payload: &RfPayload) -> Result<(), Error> {
         send(&mut self.tx, self.channel, receiver, payload)
+    }
+
+    /// Sends one radio payload to a receiver type on a given channel, the
+    /// one the device itself reported.
+    pub fn send_on(&mut self, channel: u8, receiver: u8, payload: &RfPayload) -> Result<(), Error> {
+        send(&mut self.tx, channel, receiver, payload)
     }
 }
 
@@ -286,7 +290,10 @@ mod tests {
     #[test]
     fn gather_returns_nothing_when_the_first_piece_never_comes() {
         let mut port = Fake::new(vec![]);
-        assert_eq!(gather(&mut port, &mut [0; 512], TIMEOUT, TIMEOUT).unwrap(), 0);
+        assert_eq!(
+            gather(&mut port, &mut [0; 512], TIMEOUT, TIMEOUT).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -306,14 +313,20 @@ mod tests {
             code: ERROR_DEVICE_NOT_CONNECTED,
         };
         let mut port = Fake::new(vec![Ok(vec![0x10; 64]), Err(lost)]);
-        assert_eq!(gather(&mut port, &mut [0; 512], TIMEOUT, TIMEOUT), Err(lost));
+        assert_eq!(
+            gather(&mut port, &mut [0; 512], TIMEOUT, TIMEOUT),
+            Err(lost)
+        );
     }
 
     #[test]
     fn gather_stops_at_capacity_and_clips() {
         let mut port = Fake::new(vec![Ok(vec![9; 64]), Ok(vec![9; 64])]);
         let mut buffer = [0; 100];
-        assert_eq!(gather(&mut port, &mut buffer, TIMEOUT, TIMEOUT).unwrap(), 100);
+        assert_eq!(
+            gather(&mut port, &mut buffer, TIMEOUT, TIMEOUT).unwrap(),
+            100
+        );
         assert_eq!(buffer, [9; 100]);
         assert_eq!(port.timeouts.len(), 2);
         let mut port = Fake::new(vec![Ok(vec![1])]);

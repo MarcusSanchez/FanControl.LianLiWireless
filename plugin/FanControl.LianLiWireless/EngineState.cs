@@ -35,6 +35,9 @@ internal sealed class EngineState
     /// <summary>Bytes the native state structure occupies.</summary>
     public const int Size = 560;
 
+    /// <summary>The interface version this layout belongs to.</summary>
+    public const uint Version = 1;
+
     private const int GroupSize = 32;
     private const int MaxGroups = 16;
     private const int GroupsOffset = 44;
@@ -65,6 +68,12 @@ internal sealed class EngineState
         if (buffer.Length < Size)
         {
             throw new ArgumentException("state buffer is " + buffer.Length.ToString(CultureInfo.InvariantCulture) + " bytes, need " + Size.ToString(CultureInfo.InvariantCulture), nameof(buffer));
+        }
+
+        uint version = BitConverter.ToUInt32(buffer, 4);
+        if (version != Version)
+        {
+            throw new ArgumentException("state is interface version " + version.ToString(CultureInfo.InvariantCulture) + ", this plugin reads " + Version.ToString(CultureInfo.InvariantCulture), nameof(buffer));
         }
 
         int count = (int)Math.Min(BitConverter.ToUInt32(buffer, 40), MaxGroups);

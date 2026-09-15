@@ -37,6 +37,12 @@ pub fn min_duty(device: &Device) -> u8 {
 
 /// The fan model byte, for devices whose kind is not fixed by their
 /// device type.
+///
+/// Device types that stand on their own: 1 to 9 Strimer Plus light
+/// strips, 10 HydroShift II LCD-C cooler, 11 HydroShift II LCD-S cooler,
+/// 65 Lancool 217 ring, 66 Lancool V150 controller, 88 Universal Screen
+/// ring. Anything else is a fan group whose model is the first non-zero
+/// fan type byte.
 fn model(device: &Device) -> Option<u8> {
     match device.device_type {
         1..=11 | 65 | 66 | 88 => None,
@@ -44,6 +50,13 @@ fn model(device: &Device) -> Option<u8> {
     }
 }
 
+/// The lowest percentage a device's fans run at, by product.
+///
+/// Fan type bytes: 20 to 26 UNI FAN SL V3 (LED 20 to 22, LCD 23 to 26);
+/// 27 to 35 TL V2 (LCD 27 and 32 to 35, LED 28 to 31); 36 to 39 SL-INF;
+/// 40 to 42 CL V1 and RL120; 43 to 50 SL-INF V3 (LCD 43, 44, 47, 48);
+/// 51 to 58 TL V3 (LCD 51, 52, 55, 56); 59 to 62 SL V4; 63 P28 V2;
+/// 126 and 127 CL V2, 127 mounted reversed.
 fn min_percent(device: &Device) -> u8 {
     match device.device_type {
         1..=9 | 65 | 88 => 0,
@@ -61,6 +74,7 @@ fn is_cooler(device: &Device) -> bool {
     matches!(device.device_type, 10 | 11)
 }
 
+/// CL V1, RL120 and CL V2 fans skip the duties 153 to 155.
 fn filters_duty(device: &Device) -> bool {
     matches!(model(device), Some(40..=42) | Some(126) | Some(127))
 }

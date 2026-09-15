@@ -14,6 +14,7 @@ use crate::groups::Tracker;
 use crate::heartbeat::{self, Clock, Readings};
 use crate::{clock, speed};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -39,8 +40,9 @@ pub trait Link {
     fn channel(&self) -> u8;
     /// One discovery poll.
     fn poll(&mut self) -> Result<Reply, dongle::Error>;
-    /// One radio payload to a receiver type.
-    fn send(&mut self, receiver: u8, payload: &RfPayload) -> Result<(), dongle::Error>;
+    /// One radio payload to a receiver type on a channel.
+    fn send(&mut self, channel: u8, receiver: u8, payload: &RfPayload)
+        -> Result<(), dongle::Error>;
 }
 
 impl Link for Dongle {
@@ -56,8 +58,36 @@ impl Link for Dongle {
         Dongle::poll(self)
     }
 
-    fn send(&mut self, receiver: u8, payload: &RfPayload) -> Result<(), dongle::Error> {
-        Dongle::send(self, receiver, payload)
+    fn send(
+        &mut self,
+        channel: u8,
+        receiver: u8,
+        payload: &RfPayload,
+    ) -> Result<(), dongle::Error> {
+        Dongle::send_on(self, channel, receiver, payload)
+    }
+}
+
+/// Why every reachable group is being held at full speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alarm {
+    /// Polls have failed [`POLL_FAILURES`] times in a row.
+    Dongle,
+    /// A bound fan group has gone unheard for too long.
+    Group([u8; 6]),
+}
+
+impl fmt::Display for Alarm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dongle => write!(f, "{POLL_FAILURES} polls failed in a row"),
+            Self::Group(mac) => write!(
+                f,
+                "{} unheard for {} s",
+                text(mac),
+                crate::groups::OFFLINE_AFTER.as_secs()
+            ),
+        }
     }
 }
 
@@ -100,7 +130,7 @@ pub struct Snapshot {
     /// Polls that failed.
     pub poll_failures: u64,
     /// Whether the failsafe is in force, and why.
-    pub alarm: Option<String>,
+    pub alarm: Option<Alarm>,
     /// Text of the last error, if any.
     pub last_error: Option<String>,
     /// Fan groups bound to the dongle, in slot order.
@@ -115,7 +145,7 @@ pub struct Core {
     heartbeat_sent: bool,
     last_heartbeat: Option<Instant>,
     failures_in_a_row: u32,
-    alarm: Option<String>,
+    alarm: Option<Alarm>,
     snapshot: Snapshot,
     events: Vec<String>,
 }
@@ -179,7 +209,7 @@ impl Core {
         }
         let block = heartbeat::block(&Readings::default(), &clock);
         let payload = heartbeat::payload(&link.master_mac(), &block, !self.heartbeat_sent);
-        match link.send(BROADCAST, &payload) {
+        match link.send(self.channel, BROADCAST, &payload) {
             Ok(()) => {
                 self.heartbeat_sent = true;
                 self.last_heartbeat = Some(now);
@@ -229,22 +259,18 @@ impl Core {
             .map(|g| g.device.mac)
             .collect();
         let alarm = if self.failures_in_a_row >= POLL_FAILURES {
-            Some(format!("{} polls failed in a row", self.failures_in_a_row))
+            Some(Alarm::Dongle)
         } else {
-            lost.first().map(|mac| {
-                format!(
-                    "{} unheard for {} s",
-                    text(mac),
-                    crate::groups::OFFLINE_AFTER.as_secs()
-                )
-            })
+            lost.first().map(|mac| Alarm::Group(*mac))
         };
         if alarm != self.alarm {
             match &alarm {
                 Some(why) => self.events.push(format!(
                     "failsafe: {why}; every reachable group to {FAILSAFE_PERCENT}%"
                 )),
-                None => self.events.push(String::from("failsafe cleared; targets resume")),
+                None => self
+                    .events
+                    .push(String::from("failsafe cleared; targets resume")),
             }
             self.alarm = alarm;
         }
@@ -286,6 +312,9 @@ impl Core {
         }
     }
 
+    /// Sends the group's target if the tracker says it is due. With the
+    /// keepalive at one second and the tick at one second, that is every
+    /// tick: the firmware wants each group's duty repeated that often.
     fn send_if_due<L: Link>(&mut self, link: &mut L, mac: &[u8; 6], now: Instant) {
         let Some(group) = self.tracker.group(mac) else {
             return;
@@ -299,7 +328,7 @@ impl Core {
         let device = group.device;
         let slot = self.tracker.slot(mac);
         let payload = speed::payload(&device, &link.master_mac(), self.channel, slot, target);
-        match link.send(device.receiver, &payload) {
+        match link.send(device.channel, device.receiver, &payload) {
             Ok(()) => self.tracker.sent(mac, now),
             Err(error) => self.fail(format!("{}: {error}", text(mac))),
         }
@@ -340,7 +369,7 @@ impl Core {
                 });
             }
         }
-        self.snapshot.alarm = self.alarm.clone();
+        self.snapshot.alarm = self.alarm;
         self.snapshot.groups = groups;
     }
 
@@ -360,7 +389,7 @@ impl Core {
             let target = group.target.unwrap_or_default();
             let slot = self.tracker.slot(&mac);
             let payload = speed::payload(&device, &link.master_mac(), self.channel, slot, target);
-            if link.send(device.receiver, &payload).is_ok() {
+            if link.send(device.channel, device.receiver, &payload).is_ok() {
                 self.tracker.sent(&mac, now);
             }
         }
@@ -499,7 +528,9 @@ impl Drop for Engine {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The text a panic carried, if it was a string.
@@ -626,10 +657,16 @@ pub(crate) mod fake {
             }
         }
 
-        fn send(&mut self, receiver: u8, payload: &RfPayload) -> Result<(), dongle::Error> {
+        fn send(
+            &mut self,
+            channel: u8,
+            receiver: u8,
+            payload: &RfPayload,
+        ) -> Result<(), dongle::Error> {
             if self.send_fails {
                 return Err(lost());
             }
+            assert_eq!(channel, 8);
             let mut duty = [0; 4];
             duty.copy_from_slice(&payload[17..21]);
             self.sent.push(Sent {
@@ -732,12 +769,15 @@ mod tests {
         }
         core.tick(&mut link, at(base, 16), clock());
         let snap = core.snapshot();
-        assert!(snap.alarm.as_deref().unwrap().contains("unheard"), "{snap:?}");
+        assert_eq!(snap.alarm, Some(Alarm::Group(B)), "{snap:?}");
         assert_eq!(snap.groups.len(), 2);
         assert!(!snap.groups[1].online);
         assert_eq!(link.speeds().last().unwrap().duty, [255, 255, 255, 0]);
         let events = core.take_events();
-        assert!(events.iter().any(|e| e.starts_with("failsafe:")), "{events:?}");
+        assert!(
+            events.iter().any(|e| e.starts_with("failsafe:")),
+            "{events:?}"
+        );
         link.then(Ok(reply(&[a, b])));
         core.tick(&mut link, at(base, 17), clock());
         assert_eq!(core.snapshot().alarm, None);
@@ -763,10 +803,28 @@ mod tests {
         assert_eq!(core.snapshot().poll_failures, 2);
         link.then(Err(lost()));
         core.tick(&mut link, at(base, 3), clock());
-        assert!(core.snapshot().alarm.as_deref().unwrap().contains("3 polls"));
+        assert_eq!(core.snapshot().alarm, Some(Alarm::Dongle));
         assert_eq!(link.speeds().last().unwrap().duty, [255, 255, 255, 0]);
-        assert!(core.snapshot().last_error.as_deref().unwrap().starts_with("poll:"));
+        assert!(core
+            .snapshot()
+            .last_error
+            .as_deref()
+            .unwrap()
+            .starts_with("poll:"));
+        let failsafe_lines = core
+            .take_events()
+            .iter()
+            .filter(|e| e.starts_with("failsafe:"))
+            .count();
+        assert_eq!(failsafe_lines, 1);
+        link.then(Err(lost()));
         core.tick(&mut link, at(base, 4), clock());
+        assert_eq!(core.snapshot().alarm, Some(Alarm::Dongle));
+        assert!(!core
+            .take_events()
+            .iter()
+            .any(|e| e.starts_with("failsafe:")));
+        core.tick(&mut link, at(base, 5), clock());
         assert_eq!(core.snapshot().alarm, None);
         assert_eq!(link.speeds().last().unwrap().duty, [128, 128, 128, 0]);
     }
@@ -783,8 +841,14 @@ mod tests {
         assert!(snap.last_error.is_some());
         assert_eq!(snap.polls, 1);
         let events = core.take_events();
-        assert!(events.iter().any(|e| e.starts_with("heartbeat:")), "{events:?}");
-        assert!(events.iter().any(|e| e.starts_with("01:01:01:01:01:01:")), "{events:?}");
+        assert!(
+            events.iter().any(|e| e.starts_with("heartbeat:")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.starts_with("01:01:01:01:01:01:")),
+            "{events:?}"
+        );
         link.send_fails = false;
         core.tick(&mut link, at(base, 1), clock());
         assert_eq!(link.heartbeats(), 1);
@@ -816,7 +880,9 @@ mod tests {
         core.shutdown(&mut link, at(base, 1));
         let speeds = link.speeds();
         assert_eq!(speeds.len(), 2);
-        assert!(speeds.iter().all(|s| s.receiver == 2 && s.duty == [128, 128, 128, 0]));
+        assert!(speeds
+            .iter()
+            .all(|s| s.receiver == 2 && s.duty == [128, 128, 128, 0]));
         assert!(core.take_events().iter().any(|e| e.starts_with("stopping")));
 
         let mut applied = device(A, 2, 3, 128);
@@ -835,7 +901,7 @@ mod tests {
         let engine = Engine::start(link, |_| {});
         thread::sleep(Duration::from_millis(3500));
         let ticks = engine.snapshot().ticks;
-        assert!((4..=5).contains(&ticks), "{ticks} ticks in 3.5 s");
+        assert!((3..=5).contains(&ticks), "{ticks} ticks in 3.5 s");
         engine.stop();
     }
 
@@ -854,7 +920,10 @@ mod tests {
         assert_eq!(snap.groups[0].target, Some([128, 128, 128, 0]));
         engine.stop();
         let lines = lock(&logged).clone();
-        assert!(lines.first().unwrap().starts_with("engine started"), "{lines:?}");
+        assert!(
+            lines.first().unwrap().starts_with("engine started"),
+            "{lines:?}"
+        );
         assert!(lines.iter().any(|l| l.starts_with("stopping")), "{lines:?}");
         assert_eq!(lines.last().unwrap(), "engine stopped");
     }

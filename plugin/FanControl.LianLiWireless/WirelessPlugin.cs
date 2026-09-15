@@ -48,14 +48,20 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
             try
             {
                 _engine = Engine.Open();
-                Log("engine opened; log at " + _file.Path_);
+                Log("engine opened; log at " + _file.Location);
             }
-#pragma warning disable CA1031 // host seam: a dongle that will not open leaves the plugin empty, never crashes FanControl
-            catch (Exception ex)
+            catch (EngineException ex)
             {
-                Log(Engine.LastOpenWasLConnect
+                Log(ex.IsLConnect
                     ? "not started: " + ex.Message + "; stop the L-Connect service and refresh the plugin"
                     : "not started: " + ex.Message);
+                _engine = null;
+                return;
+            }
+#pragma warning disable CA1031 // host seam: a library that will not load leaves the plugin empty, never crashes FanControl
+            catch (Exception ex)
+            {
+                Log("not started: " + ex.Message);
                 _engine = null;
                 return;
             }

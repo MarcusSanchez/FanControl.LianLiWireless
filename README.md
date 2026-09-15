@@ -38,8 +38,12 @@ Behaviour worth knowing:
 
 - Every group gets the plugin's heartbeat once a second, which the fan
   firmware needs; without it the fans run on their own with occasional
-  bursts of speed.
-- A control value below 30 % is raised to 30 %. Fans never stop.
+  bursts of speed. The heartbeat also carries the readings that fans with
+  screens display, and the plugin sends none, so those screens show zero
+  for temperature and load while it runs.
+- A control value below 30 % is raised to 30 % by the plugin's engine, so
+  fans never stop under FanControl. The library itself sends whatever it
+  is given; `probe set` will send 0.
 - If the dongle stops answering, or a group goes unheard for 15 seconds,
   every group still reachable is set to 100 % until things recover.
 - When FanControl closes or refreshes the plugin, the groups keep whatever

@@ -151,7 +151,10 @@ impl Handle {
     }
 
     /// A log sink for [`Engine::start`] that feeds a handle's log.
-    pub fn log_sink() -> (Arc<Mutex<VecDeque<String>>>, impl FnMut(&str) + Send + 'static) {
+    pub fn log_sink() -> (
+        Arc<Mutex<VecDeque<String>>>,
+        impl FnMut(&str) + Send + 'static,
+    ) {
         let log = Arc::new(Mutex::new(VecDeque::new()));
         let sink = Arc::clone(&log);
         let push = move |line: &str| {
@@ -292,7 +295,7 @@ pub unsafe extern "C" fn lianli_read_state(handle: *const Handle, state: *mut St
             return ERR_ARGUMENT;
         }
         let expected = std::mem::size_of::<State>() as u32;
-        let given = unsafe { (*state).size };
+        let given = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*state).size)) };
         if given < expected {
             set_error(format!(
                 "read_state: state is {given} bytes, this library needs {expected}"
@@ -305,7 +308,7 @@ pub unsafe extern "C" fn lianli_read_state(handle: *const Handle, state: *mut St
             return ERR_ARGUMENT;
         };
         let filled = State::from(&engine.snapshot());
-        unsafe { state.write(filled) };
+        unsafe { state.write_unaligned(filled) };
         OK
     })
 }
@@ -397,9 +400,49 @@ mod tests {
 
     #[test]
     fn layouts_are_fixed() {
+        use std::mem::offset_of;
         assert_eq!(std::mem::size_of::<Group>(), 32);
+        assert_eq!(offset_of!(Group, mac), 0);
+        assert_eq!(offset_of!(Group, receiver), 6);
+        assert_eq!(offset_of!(Group, fan_count), 7);
+        assert_eq!(offset_of!(Group, model), 8);
+        assert_eq!(offset_of!(Group, online), 9);
+        assert_eq!(offset_of!(Group, acknowledged), 10);
+        assert_eq!(offset_of!(Group, has_target), 11);
+        assert_eq!(offset_of!(Group, unacknowledged), 12);
+        assert_eq!(offset_of!(Group, rpm), 16);
+        assert_eq!(offset_of!(Group, duty), 24);
+        assert_eq!(offset_of!(Group, target), 28);
         assert_eq!(std::mem::size_of::<State>(), 48 + 32 * MAX_GROUPS);
+        assert_eq!(offset_of!(State, size), 0);
+        assert_eq!(offset_of!(State, version), 4);
+        assert_eq!(offset_of!(State, master_mac), 8);
+        assert_eq!(offset_of!(State, channel), 14);
+        assert_eq!(offset_of!(State, alarm), 15);
+        assert_eq!(offset_of!(State, ticks), 16);
+        assert_eq!(offset_of!(State, polls), 24);
+        assert_eq!(offset_of!(State, poll_failures), 32);
+        assert_eq!(offset_of!(State, group_count), 40);
+        assert_eq!(offset_of!(State, groups), 44);
         assert_eq!(lianli_version(), 1);
+    }
+
+    #[test]
+    fn state_can_be_read_into_unaligned_storage() {
+        let handle = open_fake();
+        thread::sleep(Duration::from_millis(300));
+        let mut raw = vec![0u8; std::mem::size_of::<State>() + 1];
+        let at = unsafe { raw.as_mut_ptr().add(1) } as *mut State;
+        unsafe {
+            std::ptr::write_unaligned(
+                std::ptr::addr_of_mut!((*at).size),
+                std::mem::size_of::<State>() as u32,
+            );
+        }
+        assert_eq!(unsafe { lianli_read_state(handle, at) }, OK);
+        let version = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*at).version)) };
+        assert_eq!(version, ABI_VERSION);
+        assert_eq!(unsafe { lianli_close(handle) }, OK);
     }
 
     #[test]
@@ -420,14 +463,20 @@ mod tests {
             unsafe { lianli_take_log(ptr::null(), buffer.as_mut_ptr(), 8) },
             ERR_ARGUMENT
         );
-        assert_eq!(unsafe { lianli_last_error(ptr::null_mut(), 8) }, ERR_ARGUMENT);
+        assert_eq!(
+            unsafe { lianli_last_error(ptr::null_mut(), 8) },
+            ERR_ARGUMENT
+        );
     }
 
     #[test]
     fn a_handle_reports_state_and_log_and_closes() {
         let handle = open_fake();
         let mac = A;
-        assert_eq!(unsafe { lianli_set_percent(handle, mac.as_ptr(), 101) }, ERR_ARGUMENT);
+        assert_eq!(
+            unsafe { lianli_set_percent(handle, mac.as_ptr(), 101) },
+            ERR_ARGUMENT
+        );
         assert_eq!(unsafe { lianli_set_percent(handle, mac.as_ptr(), 50) }, OK);
         thread::sleep(Duration::from_millis(1300));
 

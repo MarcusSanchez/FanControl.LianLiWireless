@@ -9,11 +9,12 @@
     <AssemblyName>FanControl.LianLiWireless</AssemblyName>
     <RootNamespace>FanControl.LianLiWireless</RootNamespace>
     <Version>0.1.0</Version>
+    <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
   </PropertyGroup>
 
   <ItemGroup>
     <Reference Include="FanControl.Plugins">
-      <HintPath>C:\Program Files (x86)\FanControl\FanControl.Plugins.dll</HintPath>
+      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

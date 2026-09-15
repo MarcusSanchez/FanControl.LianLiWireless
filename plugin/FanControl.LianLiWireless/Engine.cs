@@ -5,6 +5,23 @@ using System.Text;
 
 namespace FanControl.LianLiWireless;
 
+/// <summary>A native call failed; carries the library's code.</summary>
+internal sealed class EngineException : Exception
+{
+    public EngineException(string call, int code, string detail)
+        : base(call + " failed with code " + code.ToString(CultureInfo.InvariantCulture)
+            + (detail.Length > 0 ? ": " + detail : string.Empty))
+    {
+        Code = code;
+    }
+
+    /// <summary>The library's error code.</summary>
+    public int Code { get; }
+
+    /// <summary>Whether the failure was the L-Connect service holding the dongle.</summary>
+    public bool IsLConnect => Code == Native.ErrorLConnect;
+}
+
 /// <summary>
 /// A running native engine. Opening finds the dongle and starts the loop;
 /// disposing stops it and leaves the groups at their last duty.
@@ -21,19 +38,26 @@ internal sealed class Engine : IDisposable
         _handle = handle;
     }
 
-    /// <summary>Whether the L-Connect service holds the dongle, from the last failed open.</summary>
-    public static bool LastOpenWasLConnect { get; private set; }
+    ~Engine()
+    {
+        Dispose();
+    }
 
     /// <summary>Finds the dongle and starts the engine.</summary>
-    /// <exception cref="InvalidOperationException">The dongle could not be opened.</exception>
+    /// <exception cref="EngineException">The dongle could not be opened.</exception>
     public static Engine Open()
     {
         Native.EnsureLoaded();
+        uint version = Native.lianli_version();
+        if (version != EngineState.Version)
+        {
+            throw new EngineException("version", Native.ErrorSize, "library speaks interface " + version.ToString(CultureInfo.InvariantCulture) + ", this plugin expects " + EngineState.Version.ToString(CultureInfo.InvariantCulture));
+        }
+
         int code = Native.lianli_open(out IntPtr handle);
-        LastOpenWasLConnect = code == Native.ErrorLConnect;
         if (code != Native.Ok)
         {
-            throw new InvalidOperationException(Describe("open", code));
+            throw new EngineException("open", code, Native.LastError());
         }
 
         return new Engine(handle);
@@ -58,7 +82,7 @@ internal sealed class Engine : IDisposable
             int code = Native.lianli_set_percent(_handle, mac, clamped);
             if (code != Native.Ok)
             {
-                throw new InvalidOperationException(Describe("set_percent", code));
+                throw new EngineException("set_percent", code, Native.LastError());
             }
         }
     }
@@ -79,7 +103,7 @@ internal sealed class Engine : IDisposable
             int code = Native.lianli_read_state(_handle, _state);
             if (code != Native.Ok)
             {
-                throw new InvalidOperationException(Describe("read_state", code));
+                throw new EngineException("read_state", code, Native.LastError());
             }
 
             return EngineState.Parse(_state);
@@ -126,12 +150,7 @@ internal sealed class Engine : IDisposable
             _handle = IntPtr.Zero;
             Native.lianli_close(handle);
         }
-    }
 
-    private static string Describe(string call, int code)
-    {
-        string detail = Native.LastError();
-        return call + " failed with code " + code.ToString(CultureInfo.InvariantCulture)
-            + (detail.Length > 0 ? ": " + detail : string.Empty);
+        GC.SuppressFinalize(this);
     }
 }

@@ -188,9 +188,8 @@ fn walk(set: HDEVINFO) -> Result<Vec<String>, WinError> {
         if ok == 0 {
             return Err(WinError::last("SetupDiGetDeviceInterfaceDetailW"));
         }
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(buffer.as_ptr() as *const u8, required as usize)
-        };
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, required as usize) };
         let units: Vec<u16> = bytes[DEVICE_INTERFACE_DETAIL_PATH_OFFSET..]
             .as_chunks::<2>()
             .0
@@ -207,8 +206,10 @@ fn walk(set: HDEVINFO) -> Result<Vec<String>, WinError> {
 mod tests {
     use super::*;
 
-    const TX: &str = r"\\?\usb#vid_0416&pid_8040#b&25613874&0&3#{1d4b2365-4749-48ea-b38a-7c6fdddd7e26}";
-    const RX: &str = r"\\?\usb#vid_0416&pid_8041#b&25613874&0&2#{1d4b2365-4749-48ea-b38a-7c6fdddd7e26}";
+    const TX: &str =
+        r"\\?\usb#vid_0416&pid_8040#b&25613874&0&3#{1d4b2365-4749-48ea-b38a-7c6fdddd7e26}";
+    const RX: &str =
+        r"\\?\usb#vid_0416&pid_8041#b&25613874&0&2#{1d4b2365-4749-48ea-b38a-7c6fdddd7e26}";
 
     #[test]
     fn interface_guid_reads_back_as_its_text() {
@@ -259,10 +260,7 @@ mod tests {
             pair(&[RX.to_string()]),
             Err(Error::Missing(Role::Transmitter))
         );
-        assert_eq!(
-            pair(&[TX.to_string()]),
-            Err(Error::Missing(Role::Receiver))
-        );
+        assert_eq!(pair(&[TX.to_string()]), Err(Error::Missing(Role::Receiver)));
         assert_eq!(pair(&[]), Err(Error::Missing(Role::Transmitter)));
         assert_eq!(
             pair(&[TX.to_string(), RX.to_string(), RX.to_string()]),

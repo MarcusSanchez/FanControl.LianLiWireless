@@ -84,6 +84,15 @@ public class EngineStateTests
     }
 
     [Fact]
+    public void RefusesAnotherInterfaceVersion()
+    {
+        byte[] buffer = Buffer(0);
+        BitConverter.GetBytes(2u).CopyTo(buffer, 4);
+        var error = Assert.Throws<ArgumentException>(() => EngineState.Parse(buffer));
+        Assert.Contains("version 2", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatsAddresses()
     {
         Assert.Equal("bf:3d:ca:e5:66:e4", EngineState.FormatMac(new byte[] { 0xbf, 0x3d, 0xca, 0xe5, 0x66, 0xe4 }));

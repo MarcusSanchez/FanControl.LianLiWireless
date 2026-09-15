@@ -106,7 +106,9 @@ pub struct WINUSB_PIPE_INFORMATION {
 }
 
 #[cfg(not(target_pointer_width = "64"))]
-compile_error!("only 64-bit Windows is supported: the device interface detail size below is the 64-bit value");
+compile_error!(
+    "only 64-bit Windows is supported: the device interface detail size below is the 64-bit value"
+);
 
 /// `cbSize` of `SP_DEVICE_INTERFACE_DETAIL_DATA_W` on 64-bit Windows: the
 /// `DWORD` plus one `WCHAR`, padded to the structure's alignment.
@@ -204,8 +206,12 @@ pub type WinUsb_Initialize =
 pub type WinUsb_Free = unsafe extern "system" fn(WINUSB_INTERFACE_HANDLE) -> BOOL;
 pub type WinUsb_QueryInterfaceSettings =
     unsafe extern "system" fn(WINUSB_INTERFACE_HANDLE, u8, *mut USB_INTERFACE_DESCRIPTOR) -> BOOL;
-pub type WinUsb_QueryPipe =
-    unsafe extern "system" fn(WINUSB_INTERFACE_HANDLE, u8, u8, *mut WINUSB_PIPE_INFORMATION) -> BOOL;
+pub type WinUsb_QueryPipe = unsafe extern "system" fn(
+    WINUSB_INTERFACE_HANDLE,
+    u8,
+    u8,
+    *mut WINUSB_PIPE_INFORMATION,
+) -> BOOL;
 pub type WinUsb_SetPipePolicy =
     unsafe extern "system" fn(WINUSB_INTERFACE_HANDLE, u8, DWORD, DWORD, *const c_void) -> BOOL;
 pub type WinUsb_ReadPipe = unsafe extern "system" fn(
@@ -262,7 +268,10 @@ impl WinUsb {
             if address.is_null() {
                 return Err(WinError::last("GetProcAddress"));
             }
-            debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const c_void>());
+            debug_assert_eq!(
+                std::mem::size_of::<F>(),
+                std::mem::size_of::<*const c_void>()
+            );
             Ok(unsafe { std::mem::transmute_copy::<*const c_void, F>(&address) })
         }
         unsafe {
@@ -380,7 +389,10 @@ mod tests {
             code: ERROR_FILE_NOT_FOUND,
         };
         let text = error.to_string();
-        assert!(text.starts_with("CreateFileW failed with error 2"), "{text}");
+        assert!(
+            text.starts_with("CreateFileW failed with error 2"),
+            "{text}"
+        );
         assert!(!error.message().is_empty());
     }
 

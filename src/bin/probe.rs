@@ -200,11 +200,8 @@ impl Session {
             return Ok(());
         }
         let block = heartbeat::block(&heartbeat::Readings::default(), &clock::local());
-        let payload = heartbeat::payload(
-            &self.dongle.master.master_mac,
-            &block,
-            !self.heartbeat_sent,
-        );
+        let payload =
+            heartbeat::payload(&self.dongle.master.master_mac, &block, !self.heartbeat_sent);
         self.dongle
             .send(BROADCAST, &payload)
             .map_err(|e| format!("heartbeat: {e}"))?;
@@ -247,7 +244,12 @@ impl Session {
 
     /// Sets a target and keeps sending and polling until the group
     /// reports it applied, or the limit passes.
-    fn apply(&mut self, mac: &[u8; 6], wanted: [u8; FANS_PER_GROUP], what: &str) -> Result<(), String> {
+    fn apply(
+        &mut self,
+        mac: &[u8; 6],
+        wanted: [u8; FANS_PER_GROUP],
+        what: &str,
+    ) -> Result<(), String> {
         let prepared = self
             .tracker
             .set_target(mac, wanted)
@@ -297,7 +299,11 @@ impl Session {
                 now.duration_since(started).as_secs(),
                 fans(&group.device.duty, group.device.fan_count),
                 fans(&group.device.rpm, group.device.fan_count),
-                if group.acknowledged(now) { "" } else { " (not acknowledged)" }
+                if group.acknowledged(now) {
+                    ""
+                } else {
+                    " (not acknowledged)"
+                }
             );
             if now.duration_since(started) >= hold {
                 return Ok(());
@@ -423,7 +429,8 @@ fn stamp() -> String {
 fn run(args: &[String]) -> Result<(), String> {
     let options = parse_run(args)?;
     refuse_if_lconnect_runs()?;
-    let engine = Engine::open(|line| println!("{} | {line}", stamp())).map_err(|e| e.to_string())?;
+    let engine =
+        Engine::open(|line| println!("{} | {line}", stamp())).map_err(|e| e.to_string())?;
 
     let started = Instant::now();
     let mut first: Option<Snapshot> = None;
@@ -473,14 +480,21 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             let snapshot = engine.snapshot();
             match line.split_once(' ') {
-                Some((prefix, percent)) => match (resolve(&snapshot, prefix), percent.trim().parse::<u8>()) {
-                    (Ok(target), Ok(percent)) if percent <= 100 => {
-                        engine.set_percent(target, percent);
-                        println!("{} | you asked for {}% on {}", stamp(), percent, mac(&target));
+                Some((prefix, percent)) => {
+                    match (resolve(&snapshot, prefix), percent.trim().parse::<u8>()) {
+                        (Ok(target), Ok(percent)) if percent <= 100 => {
+                            engine.set_percent(target, percent);
+                            println!(
+                                "{} | you asked for {}% on {}",
+                                stamp(),
+                                percent,
+                                mac(&target)
+                            );
+                        }
+                        (Err(message), _) => println!("{} | {message}", stamp()),
+                        _ => println!("{} | '{percent}' is not a percent from 0 to 100", stamp()),
                     }
-                    (Err(message), _) => println!("{} | {message}", stamp()),
-                    _ => println!("{} | '{percent}' is not a percent from 0 to 100", stamp()),
-                },
+                }
                 None if line.is_empty() => {}
                 None => println!("{} | type '<group> <percent>' or 'q'", stamp()),
             }
@@ -531,7 +545,12 @@ fn resolve(snapshot: &Snapshot, prefix: &str) -> Result<[u8; 6], String> {
         [one] => Ok(*one),
         [] => Err(format!(
             "no group starts with '{prefix}'; groups: {}",
-            snapshot.groups.iter().map(|g| mac(&g.mac)).collect::<Vec<_>>().join(", ")
+            snapshot
+                .groups
+                .iter()
+                .map(|g| mac(&g.mac))
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
         several => Err(format!(
             "'{prefix}' matches {}",
@@ -562,7 +581,15 @@ fn print_status(snapshot: &Snapshot, elapsed: Duration) {
             if g.online { "online " } else { "OFFLINE" },
             fans(&g.duty, g.fan_count),
             match g.target {
-                Some(t) => format!("{:?}{}", fans(&t, g.fan_count), if g.acknowledged { "" } else { " (unacknowledged)" }),
+                Some(t) => format!(
+                    "{:?}{}",
+                    fans(&t, g.fan_count),
+                    if g.acknowledged {
+                        ""
+                    } else {
+                        " (unacknowledged)"
+                    }
+                ),
                 None => String::from("none"),
             },
             fans(&g.rpm, g.fan_count),

@@ -3,7 +3,13 @@
 //!
 //! Devices keep the order they were first listed in, and a device unseen
 //! for long enough drops out of that order until it is heard again. That
-//! order gives each bound device its slot in speed commands.
+//! order gives each bound device its slot in speed commands. It is the
+//! order the Linux driver for this dongle keeps, not the receiver's
+//! reply order: devices heard in the same poll join by ascending address,
+//! later arrivals go after everything already known, and a device that
+//! returns after going offline rejoins at the end. Whether the firmware
+//! reads the slot at all is unknown; keeping the same order as a driver
+//! that works in the field is the safe choice.
 
 use crate::discovery::{Device, Reply, FANS_PER_GROUP};
 use crate::speed;
@@ -182,8 +188,7 @@ impl Tracker {
     /// that were never bound to the dongle.
     pub fn sweep(&mut self, now: Instant) {
         let master = self.master_mac;
-        self.groups
-            .retain(|g| g.online(now) || g.bound_to(&master));
+        self.groups.retain(|g| g.online(now) || g.bound_to(&master));
         self.rebuild(now);
     }
 
@@ -443,7 +448,10 @@ mod tests {
         let mut t = Tracker::new(MASTER);
         t.observe(&reply(&[device([1; 6], MASTER, 0, 3)]), base);
         assert!(t.set_target(&[8; 6], [200; 4]).is_none());
-        assert_eq!(t.set_target(&[1; 6], [200, 1, 0, 255]), Some([200, 25, 0, 0]));
+        assert_eq!(
+            t.set_target(&[1; 6], [200, 1, 0, 255]),
+            Some([200, 25, 0, 0])
+        );
         let g = t.group(&[1; 6]).unwrap();
         assert!(g.due(base));
         assert!(!g.acknowledged(base));

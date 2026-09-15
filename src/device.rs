@@ -297,7 +297,10 @@ mod tests {
 
     #[test]
     fn errors_describe_the_pipe() {
-        assert_eq!(Error::NoPipe(0x81).to_string(), "the device has no pipe 0x81");
+        assert_eq!(
+            Error::NoPipe(0x81).to_string(),
+            "the device has no pipe 0x81"
+        );
         assert_eq!(
             Error::PipeType(0x01, 1).to_string(),
             "pipe 0x01 has unusable transfer type 1"

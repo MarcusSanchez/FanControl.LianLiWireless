@@ -24,3 +24,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+# The C exports catch panics and turn them into error codes. With "abort"
+# a panic would take the host process down instead.
+panic = "unwind"

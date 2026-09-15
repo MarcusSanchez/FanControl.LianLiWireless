@@ -32,7 +32,20 @@ public class SensorNamesTests
             Mac = new byte[] { 0x7c, 0x9c, 0x06, 0xf5, 0x17, 0xe1 },
             FanCount = 3,
         };
-        var plugin = new WirelessPlugin(null, new FileLog(System.IO.Path.GetTempFileName()));
+        string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lianli-wireless-test-" + System.Guid.NewGuid().ToString("N") + ".log");
+        using var plugin = new WirelessPlugin(null, new FileLog(logPath));
+        try
+        {
+            RunSensorChecks(plugin, group);
+        }
+        finally
+        {
+            System.IO.File.Delete(logPath);
+        }
+    }
+
+    private static void RunSensorChecks(WirelessPlugin plugin, GroupState group)
+    {
         var control = new GroupControl(plugin, group);
         var fan = new FanSensor(plugin, group, 1);
         Assert.Equal("lianli-wireless/7c:9c:06:f5:17:e1/control", control.Id);

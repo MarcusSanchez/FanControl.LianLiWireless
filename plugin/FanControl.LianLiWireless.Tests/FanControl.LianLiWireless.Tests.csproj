@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FanControl.LianLiWireless\FanControl.LianLiWireless.csproj" />
     <Reference Include="FanControl.Plugins">
-      <HintPath>C:\Program Files (x86)\FanControl\FanControl.Plugins.dll</HintPath>
+      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
