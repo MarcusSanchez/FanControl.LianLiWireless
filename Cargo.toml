@@ -5,6 +5,9 @@ edition = "2021"
 rust-version = "1.88"
 description = "Drives Lian Li wireless fans through the RF dongle on Windows, with a FanControl plugin shell"
 license = "MIT"
+repository = "https://github.com/MarcusSanchez/FanControl.LianLiWireless"
+readme = "README.md"
+publish = false
 
 [lib]
 name = "lianli_wireless"
