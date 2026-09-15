@@ -15,7 +15,10 @@ use std::ffi::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
-/// Version of this interface's functions, layouts and codes.
+/// Version of this interface's layouts and codes. Changes when a layout
+/// or the meaning of a code changes, not when a function is added; a
+/// host that needs a newer function looks it up by name. `State::size`
+/// lets a layout grow at its end without a new version.
 pub const ABI_VERSION: u32 = 2;
 
 /// Most groups a state can carry.

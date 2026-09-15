@@ -102,4 +102,8 @@ dotnet test FanControl.LianLiWireless.Tests/FanControl.LianLiWireless.Tests.cspr
 The Rust side has no dependencies and builds with the GNU toolchain; the
 plugin targets `netstandard2.0` and compiles against the
 `FanControl.Plugins.dll` in FanControl's install folder, which it never
-ships.
+ships. Where that file is absent, as on a machine without FanControl, the
+build uses a stub of the same interfaces under `plugin/FanControl.Plugins.Stub`
+instead, so the plugin and its tests still build; the stub is never
+shipped either. Set `FanControlDir` to point at a FanControl install
+elsewhere.

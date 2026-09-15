@@ -48,6 +48,9 @@ pub const RECONNECT_MAX_WAIT: Duration = Duration::from_secs(60);
 /// How often a poll that skipped records is mentioned in the log.
 const SKIP_LOG_EVERY: Duration = Duration::from_secs(60);
 
+/// Least time between two logged lines for the same failure text.
+pub const REPEAT_LOG_EVERY: Duration = Duration::from_secs(60);
+
 /// The dongle as the engine needs it.
 pub trait Link {
     /// The dongle's own address.
@@ -170,6 +173,7 @@ pub struct Core {
     last_skip_log: Option<Instant>,
     last_online: Vec<[u8; 6]>,
     change_log: HashMap<[u8; 6], ChangeLog>,
+    fail_log: HashMap<String, (Instant, u32)>,
     alarm: Option<Alarm>,
     snapshot: Snapshot,
     events: Vec<String>,
@@ -198,6 +202,7 @@ impl Core {
             last_skip_log: None,
             last_online: Vec::new(),
             change_log: HashMap::new(),
+            fail_log: HashMap::new(),
             alarm: None,
             snapshot: Snapshot {
                 master_mac,
@@ -246,6 +251,7 @@ impl Core {
         self.drive(link, now);
         self.recover(link, now);
         self.flush_change_log(now);
+        self.flush_fail_log(now);
         self.publish(now);
     }
 
@@ -263,7 +269,7 @@ impl Core {
                 self.heartbeat_sent = true;
                 self.last_heartbeat = Some(now);
             }
-            Err(error) => self.fail(format!("heartbeat: {error}")),
+            Err(error) => self.fail(format!("heartbeat: {error}"), now),
         }
     }
 
@@ -289,10 +295,16 @@ impl Core {
                 }
                 let before: Vec<[u8; 6]> = self.tracker.online().map(|g| g.device.mac).collect();
                 self.tracker.observe(&reply, now);
+                let master = self.tracker.master_mac();
                 for group in self.tracker.online() {
                     if !before.contains(&group.device.mac) {
+                        let whose = if group.bound_to(&master) {
+                            ""
+                        } else {
+                            ", bound to another dongle"
+                        };
                         self.events.push(format!(
-                            "{} online: {} fans, receiver {}",
+                            "{} online: {} fans, receiver {}{whose}",
                             text(&group.device.mac),
                             group.device.fan_count,
                             group.device.receiver
@@ -303,14 +315,48 @@ impl Core {
             Err(error) => {
                 self.snapshot.poll_failures += 1;
                 self.failures_in_a_row += 1;
-                self.fail(format!("poll: {error}"));
+                self.fail(format!("poll: {error}"), now);
             }
         }
     }
 
-    fn fail(&mut self, message: String) {
-        self.events.push(message.clone());
-        self.snapshot.last_error = Some(message);
+    /// Records a failure. The first of a kind is logged at once; the same
+    /// text again within [`REPEAT_LOG_EVERY`] is counted and mentioned
+    /// with its count once that time is up, so a dongle that stays lost
+    /// costs one line a minute per kind of failure, not one a second.
+    fn fail(&mut self, message: String, now: Instant) {
+        self.snapshot.last_error = Some(message.clone());
+        match self.fail_log.get_mut(&message) {
+            Some((logged_at, held)) => {
+                *held += 1;
+                if now.duration_since(*logged_at) >= REPEAT_LOG_EVERY {
+                    let count = std::mem::take(held);
+                    *logged_at = now;
+                    self.events
+                        .push(format!("{message} (repeated {count} times)"));
+                }
+            }
+            None => {
+                self.fail_log.insert(message.clone(), (now, 0));
+                self.events.push(message);
+            }
+        }
+    }
+
+    /// Writes the counts of failures held back by [`Self::fail`] whose
+    /// time is up, and drops the kinds not seen for that long.
+    fn flush_fail_log(&mut self, now: Instant) {
+        let mut lines = Vec::new();
+        self.fail_log.retain(|message, (logged_at, held)| {
+            if now.duration_since(*logged_at) < REPEAT_LOG_EVERY {
+                return true;
+            }
+            if *held > 0 {
+                lines.push(format!("{message} (repeated {held} times)"));
+            }
+            false
+        });
+        self.events.extend(lines);
     }
 
     /// Once polls have failed [`POLL_FAILURES`] times in a row, tries to
@@ -353,10 +399,13 @@ impl Core {
                 } else {
                     "reconnect"
                 };
-                self.fail(format!(
-                    "{scope}: {error}; next try in {} s",
-                    self.reconnect_wait.as_secs()
-                ));
+                self.fail(
+                    format!(
+                        "{scope}: {error}; next try in {} s",
+                        self.reconnect_wait.as_secs()
+                    ),
+                    now,
+                );
                 self.reconnect_at = Some(now + self.reconnect_wait);
                 self.reconnect_wait = (self.reconnect_wait * 2).min(RECONNECT_MAX_WAIT);
             }
@@ -372,7 +421,7 @@ impl Core {
         let after: Vec<[u8; 6]> = self.tracker.online().map(|g| g.device.mac).collect();
         self.last_online = after.clone();
         for mac in before {
-            if !after.contains(&mac) && !forgotten.contains(&mac) {
+            if !after.contains(&mac) && !forgotten.iter().any(|(gone, _)| *gone == mac) {
                 let fans = self
                     .tracker
                     .group(&mac)
@@ -386,7 +435,14 @@ impl Core {
                 }
             }
         }
-        for mac in forgotten {
+        for (mac, bound) in forgotten {
+            if !bound {
+                self.events.push(format!(
+                    "{} gone; it was bound to another dongle",
+                    text(&mac)
+                ));
+                continue;
+            }
             let again = if self.wanted.contains_key(&mac) {
                 "; driven at its last asked percentage if it returns"
             } else {
@@ -514,10 +570,14 @@ impl Core {
         };
         let device = group.device;
         let slot = self.tracker.slot(mac);
+        // The payload names the master's channel and the frame around it
+        // goes out on the device's own, the way the Lian Li driver
+        // (`sgtaziz/lian-li-linux`) sends a speed command. Every device
+        // seen so far reports the master's channel as its own.
         let payload = speed::payload(&device, &link.master_mac(), self.channel, slot, target);
         match link.send(device.channel, device.receiver, &payload) {
             Ok(()) => self.tracker.sent(mac, now),
-            Err(error) => self.fail(format!("{}: {error}", text(mac))),
+            Err(error) => self.fail(format!("{}: {error}", text(mac)), now),
         }
     }
 
@@ -1068,6 +1128,65 @@ mod tests {
         assert_eq!(core.snapshot().groups.len(), 2);
         assert_eq!(core.snapshot().groups[1].target, Some([128, 128, 0, 0]));
         assert_eq!(link.speeds().last().unwrap().receiver, 6);
+    }
+
+    #[test]
+    fn a_device_bound_elsewhere_is_named_as_such_when_it_comes_and_goes() {
+        let base = Instant::now();
+        let a = device(A, 2, 3, 206);
+        let mut foreign = device([7; 6], 2, 3, 206);
+        foreign.master_mac = [8; 6];
+        let mut link = Fake::new(reply(&[a, foreign]));
+        let mut core = Core::new(MASTER, 8);
+        core.tick(&mut link, base, clock());
+        let events = core.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e
+                    == "07:07:07:07:07:07 online: 3 fans, receiver 2, bound to another dongle"),
+            "{events:?}"
+        );
+        assert!(events
+            .iter()
+            .any(|e| e == "01:01:01:01:01:01 online: 3 fans, receiver 2"));
+        link.then(Ok(reply(&[a])));
+        core.tick(&mut link, at(base, 16), clock());
+        let events = core.take_events();
+        assert_eq!(
+            events,
+            vec![String::from(
+                "07:07:07:07:07:07 gone; it was bound to another dongle"
+            )]
+        );
+        assert_eq!(core.snapshot().groups.len(), 1);
+    }
+
+    #[test]
+    fn the_same_failure_is_logged_once_and_then_counted_once_a_minute() {
+        let base = Instant::now();
+        let mut link = Fake::new(reply(&[device(A, 2, 3, 206)]));
+        let mut core = Core::new(MASTER, 8);
+        core.want(A, 50);
+        core.tick(&mut link, base, clock());
+        link.then_reconnect(Ok(()));
+        for second in 1..=130 {
+            link.then(Err(lost()));
+            core.tick(&mut link, at(base, second), clock());
+        }
+        let events = core.take_events();
+        let polls: Vec<&String> = events.iter().filter(|e| e.starts_with("poll: ")).collect();
+        assert_eq!(polls.len(), 3, "{polls:?}");
+        assert!(!polls[0].contains("repeated"));
+        assert!(polls[1].ends_with("(repeated 60 times)"), "{}", polls[1]);
+        assert!(polls[2].ends_with("(repeated 60 times)"), "{}", polls[2]);
+        assert!(core
+            .snapshot()
+            .last_error
+            .as_deref()
+            .unwrap()
+            .starts_with("poll: "));
+        assert!(!events.iter().any(|e| e.contains("closed")));
     }
 
     #[test]

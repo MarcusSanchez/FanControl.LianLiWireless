@@ -7,6 +7,7 @@
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
+    <FanControlPlugins>$(FanControlDir)\FanControl.Plugins.dll</FanControlPlugins>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,10 +18,19 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FanControl.LianLiWireless\FanControl.LianLiWireless.csproj" />
+  </ItemGroup>
+
+  <!-- The tests run against FanControl's own contract assembly when it is
+       present and the stub otherwise; the test output is never shipped. -->
+  <ItemGroup Condition="Exists('$(FanControlPlugins)')">
     <Reference Include="FanControl.Plugins">
-      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
+      <HintPath>$(FanControlPlugins)</HintPath>
       <Private>true</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('$(FanControlPlugins)')">
+    <ProjectReference Include="..\FanControl.Plugins.Stub\FanControl.Plugins.Stub.csproj" />
   </ItemGroup>
 
 </Project>

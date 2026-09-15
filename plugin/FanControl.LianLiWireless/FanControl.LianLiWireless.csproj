@@ -10,13 +10,23 @@
     <RootNamespace>FanControl.LianLiWireless</RootNamespace>
     <Version>0.2.0</Version>
     <FanControlDir Condition="'$(FanControlDir)' == ''">C:\Program Files (x86)\FanControl</FanControlDir>
+    <FanControlPlugins>$(FanControlDir)\FanControl.Plugins.dll</FanControlPlugins>
   </PropertyGroup>
 
-  <ItemGroup>
+  <!-- FanControl's own contract assembly whenever it is present; the stub
+       under ../FanControl.Plugins.Stub only where it is not. Neither is
+       copied to the output. -->
+  <ItemGroup Condition="Exists('$(FanControlPlugins)')">
     <Reference Include="FanControl.Plugins">
-      <HintPath>$(FanControlDir)\FanControl.Plugins.dll</HintPath>
+      <HintPath>$(FanControlPlugins)</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('$(FanControlPlugins)')">
+    <ProjectReference Include="..\FanControl.Plugins.Stub\FanControl.Plugins.Stub.csproj">
+      <Private>false</Private>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

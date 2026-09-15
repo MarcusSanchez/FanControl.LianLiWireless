@@ -4,8 +4,9 @@
 //! Devices keep the order they were first listed in, and a device unseen
 //! for long enough drops out of that order until it is heard again. That
 //! order gives each bound device its slot in speed commands. It is the
-//! order the Linux driver for this dongle keeps, not the receiver's
-//! reply order: devices heard in the same poll join by ascending address,
+//! order the Linux driver for this dongle, `sgtaziz/lian-li-linux`,
+//! keeps, not the receiver's reply order: devices heard in the same poll
+//! join by ascending address,
 //! later arrivals go after everything already known, and a device that
 //! returns after going offline rejoins at the end. Whether the firmware
 //! reads the slot at all is unknown; keeping the same order as a driver
@@ -219,16 +220,17 @@ impl Tracker {
 
     /// Drops offline devices from the order. Forgets offline devices that
     /// were never bound to the dongle at once, and bound ones after
-    /// [`FORGET_AFTER`]; returns the addresses forgotten.
-    pub fn sweep(&mut self, now: Instant) -> Vec<[u8; 6]> {
+    /// [`FORGET_AFTER`]; returns each address forgotten with whether it
+    /// was bound.
+    pub fn sweep(&mut self, now: Instant) -> Vec<([u8; 6], bool)> {
         let master = self.master_mac;
         let mut forgotten = Vec::new();
         self.groups.retain(|g| {
+            let bound = g.bound_to(&master);
             let keep = g.online(now)
-                || (g.bound_to(&master)
-                    && now.saturating_duration_since(g.last_seen) < FORGET_AFTER);
+                || (bound && now.saturating_duration_since(g.last_seen) < FORGET_AFTER);
             if !keep {
-                forgotten.push(g.device.mac);
+                forgotten.push((g.device.mac, bound));
             }
             keep
         });
@@ -472,7 +474,7 @@ mod tests {
             base,
         );
         assert_eq!(t.groups().len(), 2);
-        assert_eq!(t.sweep(at(base, 16)), vec![[2; 6]]);
+        assert_eq!(t.sweep(at(base, 16)), vec![([2; 6], false)]);
         assert_eq!(t.online().count(), 0);
         assert_eq!(t.groups().len(), 1);
         assert_eq!(t.groups()[0].device.mac, [1; 6]);
@@ -487,7 +489,7 @@ mod tests {
             .sweep(base + FORGET_AFTER - Duration::from_secs(1))
             .is_empty());
         assert_eq!(t.groups().len(), 1);
-        assert_eq!(t.sweep(base + FORGET_AFTER), vec![[1; 6]]);
+        assert_eq!(t.sweep(base + FORGET_AFTER), vec![([1; 6], true)]);
         assert!(t.groups().is_empty());
     }
 

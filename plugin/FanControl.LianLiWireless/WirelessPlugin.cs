@@ -79,7 +79,10 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
     /// Hands the engine the percentages FanControl last asked for. FanControl
     /// closes and reopens the plugin on every refresh, and does not repeat a
     /// control's value afterwards until it changes, so the fresh engine would
-    /// otherwise have no targets.
+    /// otherwise have no targets. This relies on the host keeping the same
+    /// plugin instance across a refresh, which FanControl 277 does: a host
+    /// that built a fresh instance would find the dictionary empty and the
+    /// groups would wait for their next change of value.
     /// </summary>
     private void ReapplyAsked()
     {

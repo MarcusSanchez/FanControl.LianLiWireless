@@ -18,3 +18,16 @@ jobs:
       - run: cargo build --release --target x86_64-pc-windows-gnu
       - run: cargo test --target x86_64-pc-windows-gnu
       - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+
+  plugin:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet build plugin/FanControl.LianLiWireless/FanControl.LianLiWireless.csproj -c Release
+      - run: dotnet test plugin/FanControl.LianLiWireless.Tests/FanControl.LianLiWireless.Tests.csproj -c Release

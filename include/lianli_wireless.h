@@ -13,6 +13,11 @@
 extern "C" {
 #endif
 
+/* Changes when a layout or the meaning of a code changes. Adding a
+ * function does not change it: a host that needs a function an older
+ * library lacks should look it up by name and treat its absence as
+ * "not supported". lianli_state.size lets a layout grow at its end
+ * without a new version. */
 #define LIANLI_ABI_VERSION 2u
 #define LIANLI_MAX_GROUPS 16
 
