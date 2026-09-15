@@ -42,9 +42,12 @@ public class SensorNamesTests
         control.Set(55.4f);
         control.Update();
         Assert.Equal(55.4f, control.Value);
+        Assert.Equal(55, plugin.Asked("7c:9c:06:f5:17:e1"));
         control.Reset();
         control.Update();
         Assert.Null(control.Value);
+        Assert.Equal(55, plugin.Asked("7c:9c:06:f5:17:e1"));
+        Assert.Null(plugin.Asked("99:db:c8:e5:66:e1"));
         fan.Update();
         Assert.Null(fan.Value);
     }

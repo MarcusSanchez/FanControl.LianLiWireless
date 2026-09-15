@@ -19,6 +19,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
     private readonly object _sync = new object();
     private readonly IPluginLogger? _host;
     private readonly FileLog _file;
+    private readonly Dictionary<string, int> _asked = new Dictionary<string, int>(StringComparer.Ordinal);
     private Engine? _engine;
     private EngineState _state = new EngineState();
     private bool _alarmShown;
@@ -61,6 +62,38 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
 #pragma warning restore CA1031
 
             WaitForFirstState();
+            ReapplyAsked();
+        }
+    }
+
+    /// <summary>
+    /// Hands the engine the percentages FanControl last asked for. FanControl
+    /// closes and reopens the plugin on every refresh, and does not repeat a
+    /// control's value afterwards until it changes, so the fresh engine would
+    /// otherwise have no targets.
+    /// </summary>
+    private void ReapplyAsked()
+    {
+        if (_engine is null || _asked.Count == 0)
+        {
+            return;
+        }
+
+        foreach (GroupState group in _state.Groups)
+        {
+            if (_asked.TryGetValue(group.Address, out int percent))
+            {
+                Ask(group.Mac, percent);
+            }
+        }
+    }
+
+    /// <summary>The percentage FanControl last asked for on a group, if any.</summary>
+    internal int? Asked(string address)
+    {
+        lock (_sync)
+        {
+            return _asked.TryGetValue(address, out int percent) ? percent : (int?)null;
         }
     }
 
@@ -134,6 +167,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
     {
         lock (_sync)
         {
+            _asked[EngineState.FormatMac(mac)] = percent;
             try
             {
                 _engine?.SetPercent(mac, percent);
