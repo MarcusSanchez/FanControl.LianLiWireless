@@ -127,17 +127,20 @@ fn write_frame<P: Port>(port: &mut P, role: Role, frame: &Frame) -> Result<(), E
 
 /// Asks the transmitter which dongle it is and on which channel, trying
 /// the channels in the usual order.
+///
+/// Silence or a malformed answer moves on to the next attempt; a failed
+/// transfer ends the scan at once, since the transmitter is not going to
+/// answer on another channel either.
 pub fn connect<P: Port>(tx: &mut P) -> Result<(ConnectReply, u8), Error> {
+    let role = Role::Transmitter;
     for channel in frame::channel_scan() {
         for _ in 0..frame::connect_attempts(channel) {
-            drain(tx, FRAME_LEN, 16).map_err(|e| Error::Transfer(Role::Transmitter, e))?;
-            if tx.write(&frame::connect_request(channel), TIMEOUT).is_err() {
-                continue;
-            }
+            drain(tx, FRAME_LEN, 16).map_err(|e| Error::Transfer(role, e))?;
+            write_frame(tx, role, &frame::connect_request(channel))?;
             let mut reply = [0u8; FRAME_LEN];
-            let Ok(n) = tx.read(&mut reply, CONNECT_WAIT) else {
-                continue;
-            };
+            let n = tx
+                .read(&mut reply, CONNECT_WAIT)
+                .map_err(|e| Error::Transfer(role, e))?;
             if let Some(parsed) = frame::parse_connect_reply(&reply[..n]) {
                 return Ok((parsed, channel));
             }
@@ -367,6 +370,37 @@ mod tests {
         assert_eq!(channels.len(), 41);
         assert_eq!(&channels[..4], &[8, 8, 8, 2]);
         assert_eq!(channels[40], 39);
+    }
+
+    #[test]
+    fn connect_stops_at_the_first_failed_transfer() {
+        let lost = WinError {
+            call: "WinUsb_ReadPipe",
+            code: ERROR_DEVICE_NOT_CONNECTED,
+        };
+        let mut port = Fake::answering(vec![vec![], vec![Err(lost)]]);
+        assert_eq!(
+            connect(&mut port),
+            Err(Error::Transfer(Role::Transmitter, lost))
+        );
+        assert_eq!(port.writes.len(), 2);
+
+        struct Refusing;
+        impl Port for Refusing {
+            fn write(&mut self, _: &[u8], _: Duration) -> Result<usize, WinError> {
+                Err(WinError {
+                    call: "WinUsb_WritePipe",
+                    code: ERROR_DEVICE_NOT_CONNECTED,
+                })
+            }
+            fn read(&mut self, _: &mut [u8], _: Duration) -> Result<usize, WinError> {
+                Ok(0)
+            }
+        }
+        assert!(matches!(
+            connect(&mut Refusing),
+            Err(Error::Transfer(Role::Transmitter, _))
+        ));
     }
 
     #[test]

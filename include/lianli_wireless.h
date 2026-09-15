@@ -55,6 +55,9 @@ typedef struct lianli_state {
 
 uint32_t lianli_version(void);
 int32_t lianli_open(lianli_handle **out);
+/* Stops the engine and frees the handle. Blocks the caller until the
+ * loop finishes its current tick and sends each unconfirmed target once,
+ * about a second at most. The groups keep their last duty. */
 int32_t lianli_close(lianli_handle *handle);
 int32_t lianli_set_percent(const lianli_handle *handle, const uint8_t mac[6], uint8_t percent);
 int32_t lianli_read_state(const lianli_handle *handle, lianli_state *state);

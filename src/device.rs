@@ -43,6 +43,8 @@ pub struct Pipe {
 /// Why a device could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// Another program has the device open.
+    InUse(WinError),
     /// A Windows call failed.
     Windows(WinError),
     /// The interface has no pipe with this address.
@@ -54,6 +56,11 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InUse(error) => write!(
+                f,
+                "another program has the device open ({} error {})",
+                error.call, error.code
+            ),
             Self::Windows(error) => error.fmt(f),
             Self::NoPipe(id) => write!(f, "the device has no pipe 0x{id:02x}"),
             Self::PipeType(id, kind) => {
@@ -67,7 +74,10 @@ impl std::error::Error for Error {}
 
 impl From<WinError> for Error {
     fn from(error: WinError) -> Self {
-        Self::Windows(error)
+        match error.code {
+            ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION => Self::InUse(error),
+            _ => Self::Windows(error),
+        }
     }
 }
 
@@ -293,6 +303,32 @@ mod tests {
         assert_eq!(timeout_millis(Duration::ZERO), 1);
         assert_eq!(timeout_millis(Duration::from_secs(5)), 5000);
         assert_eq!(timeout_millis(Duration::from_secs(1 << 40)), u32::MAX);
+    }
+
+    #[test]
+    fn a_held_device_reads_as_in_use() {
+        let denied = WinError {
+            call: "CreateFileW",
+            code: ERROR_ACCESS_DENIED,
+        };
+        let error: Error = denied.into();
+        assert_eq!(error, Error::InUse(denied));
+        assert_eq!(
+            error.to_string(),
+            "another program has the device open (CreateFileW error 5)"
+        );
+        let shared: Error = WinError {
+            call: "CreateFileW",
+            code: ERROR_SHARING_VIOLATION,
+        }
+        .into();
+        assert!(matches!(shared, Error::InUse(_)));
+        let other: Error = WinError {
+            call: "CreateFileW",
+            code: ERROR_FILE_NOT_FOUND,
+        }
+        .into();
+        assert!(matches!(other, Error::Windows(_)));
     }
 
     #[test]
