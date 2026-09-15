@@ -16,6 +16,9 @@ use std::time::Duration;
 /// How long to wait for the transmitter's answer to a connect request.
 pub const CONNECT_WAIT: Duration = Duration::from_millis(500);
 
+/// Tries on the known channel when reconnecting.
+pub const RECONNECT_ATTEMPTS: u8 = 3;
+
 /// How long to wait for the first piece of a discovery reply.
 pub const REPLY_WAIT: Duration = Duration::from_millis(100);
 
@@ -135,9 +138,26 @@ fn write_frame<P: Port>(port: &mut P, role: Role, frame: &Frame) -> Result<(), E
 /// transfer ends the scan at once, since the transmitter is not going to
 /// answer on another channel either.
 pub fn connect<P: Port>(tx: &mut P) -> Result<(ConnectReply, u8), Error> {
+    connect_with(
+        tx,
+        frame::channel_scan().map(|c| (c, frame::connect_attempts(c))),
+    )
+}
+
+/// Asks the transmitter which dongle it is on one channel only, trying
+/// [`RECONNECT_ATTEMPTS`] times. Bounded to a second and a half, for a
+/// reconnect that must not hold up the loop.
+pub fn connect_on<P: Port>(tx: &mut P, channel: u8) -> Result<(ConnectReply, u8), Error> {
+    connect_with(tx, std::iter::once((channel, RECONNECT_ATTEMPTS)))
+}
+
+fn connect_with<P: Port>(
+    tx: &mut P,
+    plan: impl Iterator<Item = (u8, u8)>,
+) -> Result<(ConnectReply, u8), Error> {
     let role = Role::Transmitter;
-    for channel in frame::channel_scan() {
-        for _ in 0..frame::connect_attempts(channel) {
+    for (channel, attempts) in plan {
+        for _ in 0..attempts {
             drain(tx, FRAME_LEN, 16).map_err(|e| Error::Transfer(role, e))?;
             write_frame(tx, role, &frame::connect_request(channel))?;
             let mut reply = [0u8; FRAME_LEN];
@@ -194,13 +214,21 @@ struct Handles {
 }
 
 impl Dongle {
-    /// Finds, opens and connects to the dongle pair.
+    /// Finds, opens and connects to the dongle pair, scanning every
+    /// channel for the transmitter.
     pub fn open() -> Result<Self, Error> {
+        Self::open_with(None)
+    }
+
+    fn open_with(channel: Option<u8>) -> Result<Self, Error> {
         let paths = enumerate::find().map_err(Error::Find)?;
         let mut tx =
             Device::open(&paths.transmitter).map_err(|e| Error::Open(Role::Transmitter, e))?;
         let rx = Device::open(&paths.receiver).map_err(|e| Error::Open(Role::Receiver, e))?;
-        let (master, channel) = connect(&mut tx)?;
+        let (master, channel) = match channel {
+            Some(channel) => connect_on(&mut tx, channel)?,
+            None => connect(&mut tx)?,
+        };
         Ok(Self {
             handles: Some(Handles { tx, rx }),
             master,
@@ -209,13 +237,15 @@ impl Dongle {
         })
     }
 
-    /// Closes the dongle pair, then finds, opens and connects it again.
-    /// WinUSB gives an interface to one handle at a time, so the old
-    /// handles go first; if the reopen fails, every transfer reports
+    /// Closes the dongle pair, then finds, opens and connects it again,
+    /// on the channel it was on unless `every_channel` asks for the full
+    /// scan. WinUSB gives an interface to one handle at a time, so the
+    /// old handles go first; if the reopen fails, every transfer reports
     /// [`Error::Closed`] until a later reopen succeeds.
-    pub fn reopen(&mut self) -> Result<(), Error> {
+    pub fn reopen(&mut self, every_channel: bool) -> Result<(), Error> {
+        let channel = self.channel;
         self.handles = None;
-        let fresh = Self::open()?;
+        let fresh = Self::open_with(if every_channel { None } else { Some(channel) })?;
         *self = fresh;
         Ok(())
     }
@@ -420,6 +450,19 @@ mod tests {
             connect(&mut Refusing),
             Err(Error::Transfer(Role::Transmitter, _))
         ));
+    }
+
+    #[test]
+    fn connect_on_tries_one_channel_a_few_times() {
+        let mut port = Fake::answering(vec![vec![], vec![Ok(connect_reply())]]);
+        let (_, channel) = connect_on(&mut port, 8).unwrap();
+        assert_eq!(channel, 8);
+        assert_eq!(port.writes.len(), 2);
+
+        let mut silent = Fake::answering(vec![]);
+        assert_eq!(connect_on(&mut silent, 12), Err(Error::NoMaster));
+        let channels: Vec<u8> = silent.writes.iter().map(|w| w[1]).collect();
+        assert_eq!(channels, vec![12; usize::from(RECONNECT_ATTEMPTS)]);
     }
 
     #[test]

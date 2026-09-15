@@ -46,9 +46,12 @@ Behaviour worth knowing:
   is given; `probe set` will send 0.
 - If the dongle stops answering, every group still reachable is set to
   100 % while the engine reopens it, trying again with a wait that doubles
-  from 2 seconds up to a minute. A group that goes unheard for 15 seconds
-  keeps its last duty, which the firmware holds; its speed sensors go
-  blank until it is heard again, and after ten minutes it is forgotten.
+  from 2 seconds up to a minute. Each try looks on the channel the dongle
+  was on; once the wait has reached a minute, each try scans every
+  channel. A group that goes unheard for 15 seconds keeps its last duty,
+  which the firmware holds; its speed sensors go blank until it is heard
+  again, and after ten minutes it is forgotten, though it is driven at
+  its last value the moment it returns.
 - When FanControl closes or refreshes the plugin, or a control is reset,
   the groups keep whatever duty they had; the firmware holds it.
 - A control shows the duty its receiver reports, so the failsafe and a

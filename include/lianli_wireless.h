@@ -56,8 +56,11 @@ typedef struct lianli_state {
 uint32_t lianli_version(void);
 int32_t lianli_open(lianli_handle **out);
 /* Stops the engine and frees the handle. Blocks the caller until the
- * loop finishes its current tick and sends each unconfirmed target once,
- * about a second at most. The groups keep their last duty. */
+ * loop finishes its current tick and sends each unconfirmed target once:
+ * about a second, plus up to a second and a half while a reconnect
+ * attempt is in progress, or about twenty seconds when that attempt is
+ * scanning every channel, which happens only after the reconnect wait
+ * has reached a minute. The groups keep their last duty. */
 int32_t lianli_close(lianli_handle *handle);
 int32_t lianli_set_percent(const lianli_handle *handle, const uint8_t mac[6], uint8_t percent);
 /* Stops driving a group until the next lianli_set_percent. Its fans keep

@@ -59,9 +59,9 @@ pub trait Link {
     /// One radio payload to a receiver type on a channel.
     fn send(&mut self, channel: u8, receiver: u8, payload: &RfPayload)
         -> Result<(), dongle::Error>;
-    /// Finds, opens and connects the dongle again, replacing the old
-    /// handles.
-    fn reconnect(&mut self) -> Result<(), dongle::Error>;
+    /// Closes the dongle and opens and connects it again. Without
+    /// `every_channel` only the channel it was on is tried.
+    fn reconnect(&mut self, every_channel: bool) -> Result<(), dongle::Error>;
 }
 
 impl Link for Dongle {
@@ -86,8 +86,8 @@ impl Link for Dongle {
         Dongle::send_on(self, channel, receiver, payload)
     }
 
-    fn reconnect(&mut self) -> Result<(), dongle::Error> {
-        Dongle::reopen(self)
+    fn reconnect(&mut self, every_channel: bool) -> Result<(), dongle::Error> {
+        Dongle::reopen(self, every_channel)
     }
 }
 
@@ -241,10 +241,10 @@ impl Core {
         self.snapshot.ticks += 1;
         self.heartbeat(link, now, clock);
         self.poll(link, now);
-        self.recover(link, now);
         self.sweep(now);
         self.judge();
         self.drive(link, now);
+        self.recover(link, now);
         self.flush_change_log(now);
         self.publish(now);
     }
@@ -315,7 +315,12 @@ impl Core {
 
     /// Once polls have failed [`POLL_FAILURES`] times in a row, tries to
     /// reconnect the dongle: at once the first time, then after a wait
-    /// that doubles up to [`RECONNECT_MAX_WAIT`].
+    /// that doubles up to [`RECONNECT_MAX_WAIT`]. Runs after the groups
+    /// have been driven, so the tick that trips the failsafe sends full
+    /// speed on the handles it still has before giving them up. Attempts
+    /// try the dongle's last channel only; once the wait has reached its
+    /// cap they scan every channel, in case the dongle was swapped or
+    /// paired anew while the engine ran.
     fn recover<L: Link>(&mut self, link: &mut L, now: Instant) {
         if self.failures_in_a_row < POLL_FAILURES {
             return;
@@ -323,7 +328,8 @@ impl Core {
         if self.reconnect_at.is_some_and(|at| now < at) {
             return;
         }
-        match link.reconnect() {
+        let every_channel = self.reconnect_wait >= RECONNECT_MAX_WAIT;
+        match link.reconnect(every_channel) {
             Ok(()) => {
                 self.channel = link.channel();
                 self.snapshot.master_mac = link.master_mac();
@@ -339,10 +345,16 @@ impl Core {
                     text(&link.master_mac()),
                     link.channel()
                 ));
+                self.judge();
             }
             Err(error) => {
+                let scope = if every_channel {
+                    "reconnect on every channel"
+                } else {
+                    "reconnect"
+                };
                 self.fail(format!(
-                    "reconnect: {error}; next try in {} s",
+                    "{scope}: {error}; next try in {} s",
                     self.reconnect_wait.as_secs()
                 ));
                 self.reconnect_at = Some(now + self.reconnect_wait);
@@ -375,9 +387,13 @@ impl Core {
             }
         }
         for mac in forgotten {
-            self.wanted.remove(&mac);
+            let again = if self.wanted.contains_key(&mac) {
+                "; driven at its last asked percentage if it returns"
+            } else {
+                ""
+            };
             self.events.push(format!(
-                "{} forgotten after {} s unheard",
+                "{} forgotten after {} s unheard{again}",
                 text(&mac),
                 crate::groups::FORGET_AFTER.as_secs()
             ));
@@ -799,6 +815,11 @@ pub(crate) mod fake {
         pub(crate) send_fails: bool,
         reconnects: VecDeque<Result<(), dongle::Error>>,
         pub(crate) reconnect_calls: u32,
+        pub(crate) every_channel_calls: u32,
+        /// Set by a failed reconnect, as the real dongle gives up its
+        /// handles before trying to open again; cleared by a successful
+        /// one. Every transfer fails meanwhile.
+        pub(crate) closed: bool,
     }
 
     impl Fake {
@@ -810,6 +831,8 @@ pub(crate) mod fake {
                 send_fails: false,
                 reconnects: VecDeque::new(),
                 reconnect_calls: 0,
+                every_channel_calls: 0,
+                closed: false,
             }
         }
 
@@ -850,7 +873,11 @@ pub(crate) mod fake {
         }
 
         fn poll(&mut self) -> Result<Reply, dongle::Error> {
-            match self.replies.pop_front() {
+            let next = self.replies.pop_front();
+            if self.closed {
+                return Err(dongle::Error::Closed);
+            }
+            match next {
                 None => Ok(self.last.clone()),
                 Some(Ok(reply)) => {
                     self.last = reply.clone();
@@ -866,6 +893,9 @@ pub(crate) mod fake {
             receiver: u8,
             payload: &RfPayload,
         ) -> Result<(), dongle::Error> {
+            if self.closed {
+                return Err(dongle::Error::Closed);
+            }
             if self.send_fails {
                 return Err(lost());
             }
@@ -880,9 +910,14 @@ pub(crate) mod fake {
             Ok(())
         }
 
-        fn reconnect(&mut self) -> Result<(), dongle::Error> {
+        fn reconnect(&mut self, every_channel: bool) -> Result<(), dongle::Error> {
             self.reconnect_calls += 1;
-            self.reconnects.pop_front().unwrap_or(Ok(()))
+            if every_channel {
+                self.every_channel_calls += 1;
+            }
+            let outcome = self.reconnects.pop_front().unwrap_or(Ok(()));
+            self.closed = outcome.is_err();
+            outcome
         }
     }
 }
@@ -1021,11 +1056,80 @@ mod tests {
         let snap = core.snapshot();
         assert_eq!(snap.groups.len(), 1);
         assert_eq!(snap.groups[0].mac, A);
-        assert!(core.take_events().iter().any(|e| e.contains("forgotten")));
+        let events = core.take_events();
+        assert!(
+            events.iter().any(|e| e.ends_with(
+                "forgotten after 600 s unheard; driven at its last asked percentage if it returns"
+            )),
+            "{events:?}"
+        );
         link.then(Ok(reply(&[a, b])));
         core.tick(&mut link, at(base, 601), clock());
         assert_eq!(core.snapshot().groups.len(), 2);
-        assert!(core.snapshot().groups[1].target.is_none());
+        assert_eq!(core.snapshot().groups[1].target, Some([128, 128, 0, 0]));
+        assert_eq!(link.speeds().last().unwrap().receiver, 6);
+    }
+
+    #[test]
+    fn the_tripping_tick_sends_full_speed_before_the_handles_are_given_up() {
+        let base = Instant::now();
+        let mut link = Fake::new(reply(&[device(A, 2, 3, 206)]));
+        let mut core = Core::new(MASTER, 8);
+        core.want(A, 50);
+        core.tick(&mut link, base, clock());
+        link.then_reconnect(Err(lost()));
+        for second in 1..=3 {
+            link.then(Err(lost()));
+            core.tick(&mut link, at(base, second), clock());
+        }
+        assert!(link.closed);
+        assert_eq!(link.speeds().len(), 4);
+        assert_eq!(link.speeds()[3].duty, [255, 255, 255, 0]);
+        core.take_events();
+        core.tick(&mut link, at(base, 4), clock());
+        assert_eq!(link.speeds().len(), 4, "nothing goes out while closed");
+        let events = core.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.starts_with("poll: ") && e.contains("closed until it is reopened")),
+            "{events:?}"
+        );
+        core.tick(&mut link, at(base, 5), clock());
+        assert!(!link.closed, "the second attempt, two seconds on, succeeds");
+        assert_eq!(core.snapshot().alarm, None);
+        core.tick(&mut link, at(base, 6), clock());
+        assert_eq!(link.speeds().last().unwrap().duty, [128, 128, 128, 0]);
+    }
+
+    #[test]
+    fn once_the_wait_has_reached_a_minute_every_channel_is_scanned() {
+        let base = Instant::now();
+        let mut link = Fake::new(reply(&[device(A, 2, 3, 206)]));
+        let mut core = Core::new(MASTER, 8);
+        core.tick(&mut link, base, clock());
+        for _ in 0..6 {
+            link.then_reconnect(Err(lost()));
+        }
+        for second in 1..=64 {
+            link.then(Err(lost()));
+            core.tick(&mut link, at(base, second), clock());
+        }
+        assert_eq!(link.reconnect_calls, 5, "attempts at 3, 5, 9, 17 and 33 s");
+        assert_eq!(link.every_channel_calls, 0);
+        assert!(core
+            .take_events()
+            .iter()
+            .any(|e| e.starts_with("reconnect: ") && e.contains("next try in 32 s")));
+        core.tick(&mut link, at(base, 65), clock());
+        assert_eq!(link.reconnect_calls, 6);
+        assert_eq!(link.every_channel_calls, 1);
+        assert!(core.take_events().iter().any(
+            |e| e.starts_with("reconnect on every channel: ") && e.contains("next try in 60 s")
+        ));
+        core.tick(&mut link, at(base, 125), clock());
+        assert_eq!(link.every_channel_calls, 2);
+        assert_eq!(core.snapshot().reconnects, 1);
     }
 
     #[test]
@@ -1158,6 +1262,7 @@ mod tests {
         link.then(Err(lost()));
         core.tick(&mut link, at(base, 5), clock());
         assert_eq!(core.snapshot().alarm, None);
+        core.tick(&mut link, at(base, 6), clock());
         assert_eq!(link.speeds().last().unwrap().duty, [128, 128, 128, 0]);
     }
 
