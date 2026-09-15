@@ -19,6 +19,9 @@ jobs:
       - run: cargo test --target x86_64-pc-windows-gnu
       - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
+  # Builds and tests the shell against the stub contract. Nothing built here
+  # is released: release builds are made where FanControl is installed, so
+  # they compile against its own contract assembly.
   plugin:
     runs-on: windows-latest
     env:

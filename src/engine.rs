@@ -332,8 +332,7 @@ impl Core {
                 if now.duration_since(*logged_at) >= REPEAT_LOG_EVERY {
                     let count = std::mem::take(held);
                     *logged_at = now;
-                    self.events
-                        .push(format!("{message} (repeated {count} times)"));
+                    self.events.push(format!("{message} ({})", more(count)));
                 }
             }
             None => {
@@ -352,7 +351,7 @@ impl Core {
                 return true;
             }
             if *held > 0 {
-                lines.push(format!("{message} (repeated {held} times)"));
+                lines.push(format!("{message} ({})", more(*held)));
             }
             false
         });
@@ -643,6 +642,13 @@ impl Core {
         self.events
             .push(String::from("stopping; the groups keep their last duty"));
         self.publish(now);
+    }
+}
+
+fn more(count: u32) -> String {
+    match count {
+        1 => String::from("once more"),
+        n => format!("{n} more times"),
     }
 }
 
@@ -1178,8 +1184,8 @@ mod tests {
         let polls: Vec<&String> = events.iter().filter(|e| e.starts_with("poll: ")).collect();
         assert_eq!(polls.len(), 3, "{polls:?}");
         assert!(!polls[0].contains("repeated"));
-        assert!(polls[1].ends_with("(repeated 60 times)"), "{}", polls[1]);
-        assert!(polls[2].ends_with("(repeated 60 times)"), "{}", polls[2]);
+        assert!(polls[1].ends_with("(60 more times)"), "{}", polls[1]);
+        assert!(polls[2].ends_with("(60 more times)"), "{}", polls[2]);
         assert!(core
             .snapshot()
             .last_error
