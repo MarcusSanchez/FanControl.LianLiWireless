@@ -20,23 +20,26 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
     private readonly object _sync = new object();
     private readonly IPluginLogger? _host;
     private readonly FileLog _file;
+    private readonly GroupMemory _memory;
     private readonly Dictionary<string, int> _asked = new Dictionary<string, int>(StringComparer.Ordinal);
     private Engine? _engine;
     private EngineState _state = new EngineState();
+    private bool _loaded;
     private bool _alarmShown;
     private DateTime _lastTickSeen;
     private bool _stallShown;
 
     /// <summary>Host-injected constructor. FanControl supplies the logger.</summary>
     public WirelessPlugin(IPluginLogger logger)
-        : this(logger, new FileLog(FileLog.DefaultPath))
+        : this(logger, new FileLog(FileLog.DefaultPath), new GroupMemory(GroupMemory.DefaultPath))
     {
     }
 
-    internal WirelessPlugin(IPluginLogger? host, FileLog file)
+    internal WirelessPlugin(IPluginLogger? host, FileLog file, GroupMemory memory)
     {
         _host = host;
         _file = file ?? throw new ArgumentNullException(nameof(file));
+        _memory = memory ?? throw new ArgumentNullException(nameof(memory));
     }
 
     /// <summary>Plugin name shown in FanControl.</summary>
@@ -71,8 +74,63 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
 #pragma warning restore CA1031
 
             WaitForFirstState();
+            RememberGroups();
             ReapplyAsked();
         }
+    }
+
+    /// <summary>
+    /// Records the groups heard now and says which remembered ones are not
+    /// among them, so the log explains a control with no value.
+    /// </summary>
+    private void RememberGroups()
+    {
+        foreach (string address in _memory.Remember(_state.Groups))
+        {
+            Log("group recorded: " + address + "; kept in " + _memory.Location);
+        }
+
+        var missing = new List<string>();
+        foreach (GroupState group in _memory.Known)
+        {
+            if (Live(group.Address) is null)
+            {
+                missing.Add(SensorNames.Short(group.Address) + " (" + group.FanCount.ToString(CultureInfo.InvariantCulture) + " fans)");
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            Log("not heard now, sensors kept without values: " + string.Join(", ", missing));
+        }
+    }
+
+    /// <summary>The groups to register: those heard now in slot order, then remembered ones not heard.</summary>
+    private List<GroupState> KnownGroups()
+    {
+        var known = new List<GroupState>(_state.Groups);
+        foreach (GroupState group in _memory.Known)
+        {
+            if (Live(group.Address) is null)
+            {
+                known.Add(group);
+            }
+        }
+
+        return known;
+    }
+
+    private GroupState? Live(string address)
+    {
+        foreach (GroupState group in _state.Groups)
+        {
+            if (group.Address == address)
+            {
+                return group;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -143,7 +201,12 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
             _state.Ticks));
     }
 
-    /// <summary>Registers one control per group and one speed sensor per fan.</summary>
+    /// <summary>
+    /// Registers one control per group and one speed sensor per fan, for
+    /// the groups heard now and for every group remembered from earlier
+    /// runs, so FanControl's configuration stays valid while a group is
+    /// away. An absent group's sensors show no value until it is heard.
+    /// </summary>
     public void Load(IPluginSensorsContainer container)
     {
         if (container is null)
@@ -153,7 +216,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
 
         lock (_sync)
         {
-            foreach (GroupState group in _state.Groups)
+            foreach (GroupState group in KnownGroups())
             {
                 container.ControlSensors.Add(new GroupControl(this, group));
                 for (int slot = 0; slot < group.FanCount; slot++)
@@ -161,6 +224,8 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
                     container.FanSensors.Add(new FanSensor(this, group, slot));
                 }
             }
+
+            _loaded = true;
         }
     }
 
@@ -272,6 +337,14 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
 
             ulong before = _state.Ticks;
             _state = _engine.ReadState();
+            if (_loaded)
+            {
+                foreach (string address in _memory.Remember(_state.Groups))
+                {
+                    Log("group recorded: " + address + "; FanControl shows it after a refresh");
+                }
+            }
+
             if (_state.Alarm != _alarmShown)
             {
                 _alarmShown = _state.Alarm;
@@ -343,6 +416,7 @@ public sealed class WirelessPlugin : IPlugin2, IDisposable
         _engine.Dispose();
         _engine = null;
         _state = new EngineState();
+        _loaded = false;
         _alarmShown = false;
         _lastTickSeen = default;
         _stallShown = false;

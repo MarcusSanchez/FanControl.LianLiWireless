@@ -33,7 +33,7 @@ public class SensorNamesTests
             FanCount = 3,
         };
         string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lianli-wireless-test-" + System.Guid.NewGuid().ToString("N") + ".log");
-        using var plugin = new WirelessPlugin(null, new FileLog(logPath));
+        using var plugin = new WirelessPlugin(null, new FileLog(logPath), new GroupMemory(logPath + ".groups"));
         try
         {
             RunSensorChecks(plugin, group);

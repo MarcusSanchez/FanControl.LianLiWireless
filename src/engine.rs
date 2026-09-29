@@ -299,9 +299,9 @@ impl Core {
                 for group in self.tracker.online() {
                     if !before.contains(&group.device.mac) {
                         let whose = if group.bound_to(&master) {
-                            ""
+                            String::new()
                         } else {
-                            ", bound to another dongle"
+                            owner_text(&group.device.master_mac)
                         };
                         self.events.push(format!(
                             "{} online: {} fans, receiver {}{whose}",
@@ -437,7 +437,7 @@ impl Core {
         for (mac, bound) in forgotten {
             if !bound {
                 self.events.push(format!(
-                    "{} gone; it was bound to another dongle",
+                    "{} gone; it was not bound to this dongle",
                     text(&mac)
                 ));
                 continue;
@@ -657,6 +657,16 @@ fn held_suffix(held: u32) -> String {
         0 => String::new(),
         1 => String::from(" (1 earlier change not logged)"),
         n => format!(" ({n} earlier changes not logged)"),
+    }
+}
+
+/// How a device that is not bound to this dongle is described: unbound
+/// when its master address is empty, otherwise the master it names.
+fn owner_text(master: &[u8; 6]) -> String {
+    if master.iter().all(|b| *b == 0) || master.iter().all(|b| *b == 0xFF) {
+        String::from(", unbound")
+    } else {
+        format!(", bound to another dongle {}", text(master))
     }
 }
 
@@ -1150,7 +1160,7 @@ mod tests {
             events
                 .iter()
                 .any(|e| e
-                    == "07:07:07:07:07:07 online: 3 fans, receiver 2, bound to another dongle"),
+                    == "07:07:07:07:07:07 online: 3 fans, receiver 2, bound to another dongle 08:08:08:08:08:08"),
             "{events:?}"
         );
         assert!(events
@@ -1162,7 +1172,7 @@ mod tests {
         assert_eq!(
             events,
             vec![String::from(
-                "07:07:07:07:07:07 gone; it was bound to another dongle"
+                "07:07:07:07:07:07 gone; it was not bound to this dongle"
             )]
         );
         assert_eq!(core.snapshot().groups.len(), 1);

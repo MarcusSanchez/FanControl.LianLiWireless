@@ -56,6 +56,14 @@ Behaviour worth knowing:
   the groups keep whatever duty they had; the firmware holds it.
 - A control shows the duty its receiver reports, so the failsafe and a
   slow acknowledgement are visible as they are.
+- The plugin remembers every group it has seen, in
+  `%ProgramData%\FanControl\lianli-wireless-groups.txt`, one address and
+  fan count per line, and registers all of them at every start. A group
+  that is off, out of range or no longer bound keeps its control and
+  speed sensors: the speeds show no value and the control shows only
+  what was last asked, so FanControl's configuration stays valid and the
+  group is driven again the moment it is heard. Delete the file to
+  forget a group that is gone for good.
 - The plugin writes a log to `%ProgramData%\FanControl\lianli-wireless.log`:
   groups coming and going, targets, failsafe changes, errors. Target
   changes are logged at most once every ten seconds per group, with a
